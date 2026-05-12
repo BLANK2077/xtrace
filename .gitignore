@@ -1,0 +1,36 @@
+# Build artifacts
+xtrace
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Runtime logs and local session output
+*.log
+xtraceLog/
+fsdbreportLog/
+
+# Local agent/editor state
+.claude/
+.worktrees/
+
+# Local regression and generated simulation assets
+test/
+uart/
+testdata/
+tests/
+simv
+simv.daidir/
+csrc/
+ucli.key
+verdi_config_file
+novas_dump.log
+
+# Local notes and large vendor references not shipped in release repo
+plan.md
+NPI_TRACING_KNOWLEDGE.md
+VC_APPS_NPI.pdf
+json.hpp
