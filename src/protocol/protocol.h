@@ -17,6 +17,8 @@
 #define CMD_QUIT            "QUIT"
 #define CMD_DRIVER          "DRIVER"
 #define CMD_LOAD            "LOAD"
+#define CMD_DRIVER_JSON     "DRIVER_JSON"
+#define CMD_LOAD_JSON       "LOAD_JSON"
 
 // End-of-response marker (server -> client)
 #define END_MARKER          "##END##\n"

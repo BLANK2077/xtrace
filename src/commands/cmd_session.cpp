@@ -32,8 +32,8 @@ void print_help(const char* prog) {
     printf("  %s session kill <id>   Kill a specific session\n", prog);
     printf("  %s session kill all    Kill all sessions\n", prog);
     printf("  %s session doctor -s <sid> [-json]  Diagnose a session\n", prog);
-    printf("  %s driver <sig> [-s <sid>]  Trace signal drivers\n", prog);
-    printf("  %s load   <sig> [-s <sid>]  Trace signal loads\n", prog);
+    printf("  %s driver <sig> [-s <sid>] [-json]  Trace signal drivers\n", prog);
+    printf("  %s load   <sig> [-s <sid>] [-json]  Trace signal loads\n", prog);
     printf("  %s close               Close the latest session\n", prog);
     printf("  %s help                Show this help\n", prog);
     printf("\nExamples:\n");

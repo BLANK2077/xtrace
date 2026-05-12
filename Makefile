@@ -21,7 +21,8 @@ SRCS        = src/main.cpp \
               src/commands/cmd_session.cpp \
               src/commands/cmd_trace.cpp \
               src/server/server.cpp \
-              src/control_dep/control_dep.cpp
+              src/control_dep/control_dep.cpp \
+              src/trace/trace_engine.cpp
 
 OBJS        = $(SRCS:.cpp=.o)
 

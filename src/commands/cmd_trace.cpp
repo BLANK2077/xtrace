@@ -11,17 +11,20 @@ namespace xtrace {
 
 static int cmd_trace(int argc, char** argv, bool is_driver) {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s %s <signal> [-s <session_id>]\n",
+        fprintf(stderr, "Usage: %s %s <signal> [-s <session_id>] [-json]\n",
                 argv[0], is_driver ? "driver" : "load");
         return 1;
     }
 
     std::string signal = argv[2];
     int session_id = -1;
+    bool json_output = false;
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
             session_id = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-json") == 0) {
+            json_output = true;
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 1;
@@ -47,7 +50,12 @@ static int cmd_trace(int argc, char** argv, bool is_driver) {
         session_id = session.session_id;
     }
 
-    std::string cmd = is_driver ? CMD_DRIVER : CMD_LOAD;
+    std::string cmd;
+    if (is_driver) {
+        cmd = json_output ? CMD_DRIVER_JSON : CMD_DRIVER;
+    } else {
+        cmd = json_output ? CMD_LOAD_JSON : CMD_LOAD;
+    }
     cmd += " " + signal;
 
     if (!send_command_and_print(session_id, cmd.c_str())) {
