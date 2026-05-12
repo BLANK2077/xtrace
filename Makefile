@@ -10,7 +10,7 @@ NPI_L1_INC  = $(VERDI_HOME)/share/NPI/L1/C/inc
 NPI_LIB     = $(VERDI_HOME)/share/NPI/lib/LINUX64
 
 CXX         = g++
-CXXFLAGS    = -Wall -std=c++11 -I$(NPI_INC) -I$(NPI_L1_INC) -Isrc
+CXXFLAGS    = -Wall -std=c++11 -I$(NPI_INC) -I$(NPI_L1_INC) -Isrc -Ithird_party
 LDFLAGS     = -L$(NPI_LIB) -lNPI -lnpiL1 -ldl -lrt -lz
 
 EXE         = xtrace

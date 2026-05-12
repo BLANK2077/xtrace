@@ -2,6 +2,7 @@
 #include "../session/session_manager.h"
 #include "../client/client.h"
 #include "../protocol/protocol.h"
+#include "json.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -12,6 +13,8 @@
 
 namespace xtrace {
 
+using json = nlohmann::json;
+
 static std::string format_epoch(time_t t) {
     if (t <= 0) return "-";
     char buf[64];
@@ -19,21 +22,6 @@ static std::string format_epoch(time_t t) {
     localtime_r(&t, &tmv);
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv);
     return buf;
-}
-
-static std::string json_escape(const std::string& value) {
-    std::string out;
-    for (char c : value) {
-        switch (c) {
-            case '\\': out += "\\\\"; break;
-            case '"': out += "\\\""; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default: out += c; break;
-        }
-    }
-    return out;
 }
 
 void print_help(const char* prog) {
@@ -151,13 +139,13 @@ int cmd_session_kill(const char* id_str) {
 
 int cmd_session_doctor(int argc, char** argv) {
     int session_id = -1;
-    bool json = false;
+    bool json_output = false;
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
             session_id = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-json") == 0) {
-            json = true;
+            json_output = true;
         } else {
             fprintf(stderr, "Usage: %s session doctor -s <sid> [-json]\n", argv[0]);
             return 1;
@@ -174,21 +162,22 @@ int cmd_session_doctor(int argc, char** argv) {
     SessionHealth health = manager.diagnose_session(session_id);
     const char* status = session_health_status_name(health.status);
 
-    if (json) {
-        printf("{\n");
-        printf("  \"session_id\": %d,\n", health.session_id);
-        printf("  \"healthy\": %s,\n", health.healthy ? "true" : "false");
-        printf("  \"status\": \"%s\",\n", status);
-        printf("  \"message\": \"%s\",\n", json_escape(health.message).c_str());
-        printf("  \"pid\": %d,\n", health.info.server_pid);
-        printf("  \"socket_path\": \"%s\",\n", json_escape(health.info.socket_path).c_str());
-        printf("  \"design_file\": \"%s\",\n", json_escape(health.info.design_file).c_str());
-        printf("  \"dbdir_path\": \"%s\",\n", json_escape(health.info.dbdir_path).c_str());
-        printf("  \"dbdir_mtime\": %ld,\n", health.info.dbdir_mtime);
-        printf("  \"dbdir_size\": %lld,\n", health.info.dbdir_size);
-        printf("  \"dbdir_dev\": %llu,\n", health.info.dbdir_dev);
-        printf("  \"dbdir_inode\": %llu\n", health.info.dbdir_inode);
-        printf("}\n");
+    if (json_output) {
+        json payload = {
+            {"session_id", health.session_id},
+            {"healthy", health.healthy},
+            {"status", status},
+            {"message", health.message},
+            {"pid", health.info.server_pid},
+            {"socket_path", health.info.socket_path},
+            {"design_file", health.info.design_file},
+            {"dbdir_path", health.info.dbdir_path},
+            {"dbdir_mtime", health.info.dbdir_mtime},
+            {"dbdir_size", health.info.dbdir_size},
+            {"dbdir_dev", health.info.dbdir_dev},
+            {"dbdir_inode", health.info.dbdir_inode}
+        };
+        printf("%s\n", payload.dump(2).c_str());
     } else if (health.healthy) {
         printf("Session %d healthy\n", session_id);
         printf("  status: %s\n", status);
