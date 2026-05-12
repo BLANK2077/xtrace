@@ -7,75 +7,101 @@ description: >
   health, NPI signal tracing, or debugging xtrace daemon lifecycle behavior.
 ---
 
-# xtrace - NPI RTL signal tracing CLI
+# xtrace - NPI RTL 信号追踪 CLI
 
-## Overview
+## 概览
 
-xtrace is a Synopsys NPI based command-line tool for loading a VCS `simv.daidir`
-database and querying signal driver/load relationships without launching the full
-Verdi GUI. The same `xtrace` binary acts as both CLI client and background daemon.
+xtrace 用于加载 VCS `simv.daidir` 数据库，并查询 RTL 信号的 driver、load
+和 control dependency。使用时优先通过 `tools/xtrace-env` 运行命令。
 
-Use Chinese with the user by default.
+默认使用中文和用户沟通。
 
-## Environment
+## 环境
 
-- `VERDI_HOME` must point to a Verdi installation with NPI headers and libraries.
-- Prefer `tools/xtrace-env` for runtime commands because it sets `LD_LIBRARY_PATH`.
-- Build from the repo root with `make`; use `make clean && make` after changing
-  link inputs, session/server code, or command routing.
+- `VERDI_HOME` 必须指向可用的 Verdi 安装。
+- `tools/xtrace-env` 会自动设置 NPI 运行时库路径。
+- 如果当前目录没有 `xtrace` 二进制，先运行 `make`。
 
 ```bash
 export VERDI_HOME=/path/to/verdi/V-2023.12-SP2
-make clean && make
+make
 tools/xtrace-env open -dbdir /path/to/simv.daidir
 ```
 
-## Core workflow
+## 基本用法
 
 ```bash
-# 1. Load a VCS daidir. The path must end in .daidir.
+# 1. 加载 VCS daidir；路径必须以 .daidir 结尾。
 tools/xtrace-env open -dbdir /path/to/simv.daidir
 
-# 2. Check session health.
+# 2. 查看和诊断 session。
 tools/xtrace-env session list
+tools/xtrace-env session doctor -s 1
 tools/xtrace-env session doctor -s 1 -json
 
-# 3. Query signal relationships.
+# 3. 查询 signal driver/load。
 tools/xtrace-env driver top.u_dut.signal -s 1
 tools/xtrace-env load top.u_dut.signal -s 1
 
-# 4. Clean up.
+# 4. 需要脚本处理时使用 JSON 输出。
+tools/xtrace-env driver top.u_dut.signal -s 1 -json
+tools/xtrace-env load top.u_dut.signal -s 1 -json
+
+# 5. 关闭 session。
 tools/xtrace-env session kill 1
+tools/xtrace-env session kill all
 ```
 
-## Important behavior
+## Session 使用
 
-- `open` only supports `-dbdir <*.daidir> [other NPI options]`.
-- xtrace canonicalizes the daidir path and records `mtime/size/dev/inode`.
-- Opening the same canonical daidir reuses an existing healthy session.
-- `session doctor -s <sid> [-json]` is the canonical health check.
-- Health status may be `healthy`, `registry_missing`, `dbdir_missing`,
-  `dbdir_changed`, `process_exited`, `socket_missing`, `connect_failed`, or
-  `ping_failed`.
+- `open` 只接受 `-dbdir <*.daidir> [other options]`。
+- daidir 路径必须存在、必须是目录、且必须以 `.daidir` 结尾。
+- 再次打开同一个 daidir 时，xtrace 会复用已有健康 session。
+- `session doctor -s <sid> [-json]` 是判断 session 是否可用的首选命令。
+- 常见状态包括：`healthy`、`registry_missing`、`dbdir_missing`、
+  `dbdir_changed`、`process_exited`、`socket_missing`、`connect_failed`、
+  `ping_failed`。
 
-## Project map
+## Trace 输出
 
-- `src/main.cpp`: top-level CLI dispatch and `--server` entry.
-- `src/commands/`: client-side command parsing and help output.
-- `src/session/`: registry, daemon spawn, canonical daidir metadata, health checks.
-- `src/client/`: Unix socket client and response handling.
-- `src/server/`: daemon loop, NPI design load, driver/load command handlers.
-- `src/control_dep/`: control dependency tracing fallback logic.
-- `src/protocol/`: shared socket protocol constants.
+- 普通输出适合人工阅读，会显示 signal、role、location 和 source line。
+- `-json` 输出适合脚本处理，包含 `query`、`mode`、`results`、
+  `control_dependencies`。
+- `role` 可能是 `driver`、`load`、`rhs_use`、`lhs_target`、
+  `condition_use` 或 `statement_only`。
+- `resolution="statement_only"` 表示 NPI 只能定位到语句，不能定位到更具体的
+  signal。
 
-## Guardrails
+JSON 示例：
 
-- Do not reintroduce `open -sv`; published xtrace loads through `-dbdir`.
-- Do not treat a socket file alone as healthy; health requires registry, daidir
-  metadata, live process, connect, and `PING/PONG`.
-- Keep daemon lifecycle aligned with xwave-pkg: child server must detach from the
-  short-lived CLI process with `setsid()` and ignore `SIGHUP`.
-- Do not hardcode NPI constants from memory; inspect `$VERDI_HOME/share/NPI/inc`
-  or `$VERDI_HOME/share/NPI/L1/C/inc` when needed.
-- Keep generated outputs (`xtrace`, `*.o`, `xtraceLog/`, local daidir/csrc/test
-  assets) out of the release repository.
+```json
+{
+  "query": "top.u_dut.signal",
+  "mode": "driver",
+  "results": [
+    {
+      "signal": "top.u_dut.src",
+      "role": "driver",
+      "file": "/path/to/rtl.sv",
+      "line": 123,
+      "source": "assign signal = src;",
+      "resolution": "signal"
+    }
+  ],
+  "control_dependencies": []
+}
+```
+
+## 常用排查
+
+```bash
+# 没有可用 session
+tools/xtrace-env session list
+
+# 命令连接失败或结果异常
+tools/xtrace-env session doctor -s 1 -json
+
+# 清理不可用或不再需要的 session
+tools/xtrace-env session kill 1
+tools/xtrace-env session kill all
+```

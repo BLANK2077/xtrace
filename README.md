@@ -46,22 +46,6 @@ make
 tools/xtrace-env help
 ```
 
-## 回归验证
-
-可以复用 `~/worken/mod_port_trace/test/testcases` 中的 SV testcase，但 xtrace 测试必须自己编译 daidir，并通过 `open -dbdir` 加载：
-
-```bash
-bash tools/run-worken-trace-smoke.sh
-```
-
-脚本默认使用 `basic_output` testcase，在 `/tmp/xtrace_worken_trace_smoke` 中执行：
-
-```bash
-VCS_TARGET_ARCH=linux64 vcs -full64 -sverilog -kdb -lca ... -o simv
-```
-
-随后运行 `driver/load` 的 text 和 `-json` smoke。可以通过 `WORKEN_CASE_DIR`、`BUILD_DIR` 覆盖 testcase 和临时目录。
-
 ## 使用
 
 ### Session 管理
@@ -181,4 +165,4 @@ xtrace/
 ## 已知限制
 
 - 当前基于 **SV Language Model**（RTL 级），对于某些 NPI 本身不支持的过程赋值场景，driver/load 可能返回空结果
-- 通用名称追踪模式不支持 worken 中的 `port_ref_map` 映射，某些深层 interface 驱动源可能需要提供模块端口引用路径才能追踪
+- 通用名称追踪模式暂不做模块端口引用路径映射，某些深层 interface 驱动源可能需要提供模块端口引用路径才能追踪
