@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
     // Session commands
     if (strcmp(cmd, "session") == 0) {
         if (argc < 3) {
-            fprintf(stderr, "Usage: %s session <list|kill|doctor>\n", argv[0]);
+            fprintf(stderr, "Usage: %s session <list|ensure|kill|doctor>\n", argv[0]);
             return 1;
         }
 
@@ -48,6 +48,10 @@ int main(int argc, char** argv) {
 
         if (strcmp(subcmd, "list") == 0) {
             return cmd_session_list();
+        }
+
+        if (strcmp(subcmd, "ensure") == 0) {
+            return cmd_session_ensure(argc, argv);
         }
 
         if (strcmp(subcmd, "kill") == 0) {
@@ -77,6 +81,14 @@ int main(int argc, char** argv) {
     }
     if (strcmp(cmd, "load") == 0) {
         return cmd_load(argc, argv);
+    }
+
+    if (strcmp(cmd, "signal") == 0) {
+        return cmd_signal(argc, argv);
+    }
+
+    if (strcmp(cmd, "query") == 0) {
+        return cmd_query(argc, argv);
     }
 
     // Unknown command

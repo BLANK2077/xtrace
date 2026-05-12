@@ -25,6 +25,15 @@ struct SessionHealth {
     SessionInfo info;
 };
 
+struct SessionEnsureResult {
+    int session_id = 0;
+    bool ok = false;
+    bool reused = false;
+    std::string status;
+    std::string message;
+    SessionInfo info;
+};
+
 const char* session_health_status_name(SessionHealthStatus status);
 
 // Session manager - high-level session lifecycle management
@@ -36,6 +45,9 @@ public:
     // Create a new session, returns session ID (0 on failure)
     // This spawns the server process
     int create_session(const std::vector<std::string>& design_args);
+
+    // Ensure a healthy session exists for a dbdir argument list.
+    SessionEnsureResult ensure_session(const std::vector<std::string>& design_args);
 
     // Kill a specific session (calls npi_end() in server)
     bool kill_session(int session_id);

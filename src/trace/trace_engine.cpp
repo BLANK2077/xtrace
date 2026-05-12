@@ -30,11 +30,15 @@ static bool is_select_type(int type, const char* name) {
     return type == npiPartSelect || type == npiBitSelect || (name && strchr(name, '['));
 }
 
-TraceResult TraceEngine::trace(const std::string& signal, TraceMode mode) {
+TraceResult TraceEngine::trace(const std::string& signal, TraceMode mode, const TraceOptions& options) {
+    TraceResult result;
     if (mode == TraceMode::Driver) {
-        return trace_driver(signal);
+        result = trace_driver(signal);
+    } else {
+        result = trace_load(signal);
     }
-    return trace_load(signal);
+    apply_options(result, options);
+    return result;
 }
 
 TraceResult TraceEngine::trace_driver(const std::string& signal) {
@@ -45,6 +49,7 @@ TraceResult TraceEngine::trace_driver(const std::string& signal) {
     npiHandle sig = npi_handle_by_name(signal.c_str(), NULL);
     if (!sig) {
         result.error = "Signal not found: " + signal;
+        result.ok = false;
         return result;
     }
 
@@ -188,6 +193,37 @@ TraceResult TraceEngine::trace_load(const std::string& signal) {
     }
 
     return result;
+}
+
+void TraceEngine::apply_options(TraceResult& result, const TraceOptions& options) const {
+    auto filter_records = [&](std::vector<TraceRecord>& records) {
+        std::vector<TraceRecord> filtered;
+        for (const auto& record : records) {
+            if (!options.role.empty() && record.role != options.role) {
+                continue;
+            }
+            if (options.no_statement_only && record.resolution == "statement_only") {
+                continue;
+            }
+            filtered.push_back(record);
+        }
+        if (options.limit > 0 && (int)filtered.size() > options.limit) {
+            filtered.resize(options.limit);
+            result.truncated = true;
+        }
+        records.swap(filtered);
+    };
+
+    filter_records(result.results);
+    filter_records(result.control_dependencies);
+
+    result.has_statement_only = false;
+    for (const auto& record : result.results) {
+        if (record.resolution == "statement_only") {
+            result.has_statement_only = true;
+            break;
+        }
+    }
 }
 
 void TraceEngine::extract_expr_signals(npiHandle expr, std::vector<std::string>& signals) const {
@@ -394,6 +430,7 @@ std::string TraceEngine::render_json(const TraceResult& result) const {
     };
 
     json payload;
+    payload["ok"] = result.ok && result.error.empty();
     payload["query"] = result.query;
     payload["mode"] = result.mode;
     payload["results"] = json::array();
@@ -404,8 +441,28 @@ std::string TraceEngine::render_json(const TraceResult& result) const {
     for (const auto& record : result.control_dependencies) {
         payload["control_dependencies"].push_back(record_to_json(record));
     }
+    payload["result_count"] = result.results.size();
+    payload["truncated"] = result.truncated;
+    payload["has_statement_only"] = result.has_statement_only;
+
+    std::set<std::string> roles;
+    std::set<std::string> files;
+    for (const auto& record : result.results) {
+        if (!record.role.empty()) roles.insert(record.role);
+        if (!record.file.empty()) files.insert(record.file);
+    }
+    for (const auto& record : result.control_dependencies) {
+        if (!record.role.empty()) roles.insert(record.role);
+        if (!record.file.empty()) files.insert(record.file);
+    }
+    payload["roles"] = json::array();
+    for (const auto& role : roles) payload["roles"].push_back(role);
+    payload["files"] = json::array();
+    for (const auto& file : files) payload["files"].push_back(file);
+
     if (!result.error.empty()) {
         payload["error"] = result.error;
+        payload["status"] = "trace_error";
     }
     return payload.dump(2) + "\n";
 }

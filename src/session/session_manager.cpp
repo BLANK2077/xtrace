@@ -61,6 +61,33 @@ bool ping_socket_path(const char* sock_path) {
     return got_pong;
 }
 
+bool protocol_version_matches(const char* sock_path) {
+    int fd = connect_socket_path(sock_path);
+    if (fd < 0) return false;
+
+    const char* version_msg = CMD_VERSION "\n";
+    if (write(fd, version_msg, strlen(version_msg)) < 0) {
+        close(fd);
+        return false;
+    }
+
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    char buf[128];
+    bool matched = false;
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        matched = strstr(buf, PROTOCOL_VERSION) != nullptr;
+    }
+
+    close(fd);
+    return matched;
+}
+
 }  // namespace
 
 const char* session_health_status_name(SessionHealthStatus status) {
@@ -219,11 +246,15 @@ bool SessionManager::wait_for_server(int session_id, pid_t pid) {
     return false;
 }
 
-int SessionManager::create_session(const std::vector<std::string>& design_args) {
+SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string>& design_args) {
+    SessionEnsureResult result;
+
     std::string canonical_dbdir;
     std::vector<std::string> canonical_args;
     if (!parse_open_args(design_args, canonical_dbdir, canonical_args)) {
-        return 0;
+        result.status = "invalid_args";
+        result.message = "Usage: open -dbdir <simv.daidir> [args...]";
+        return result;
     }
 
     // Clean up stale sessions first
@@ -232,9 +263,17 @@ int SessionManager::create_session(const std::vector<std::string>& design_args) 
     std::vector<SessionInfo> existing;
     registry_->load_all(existing);
     for (const auto& session : existing) {
-        if (session.dbdir_path == canonical_dbdir && diagnose_session(session.session_id).healthy) {
+        if (session.dbdir_path == canonical_dbdir &&
+            diagnose_session(session.session_id).healthy &&
+            protocol_version_matches(session.socket_path.c_str())) {
             registry_->touch(session.session_id, time(nullptr));
-            return session.session_id;
+            result.ok = true;
+            result.reused = true;
+            result.session_id = session.session_id;
+            result.status = "healthy";
+            result.message = "Reused healthy session";
+            registry_->get(session.session_id, result.info);
+            return result;
         }
     }
 
@@ -244,7 +283,9 @@ int SessionManager::create_session(const std::vector<std::string>& design_args) 
     // Spawn server process
     pid_t pid = spawn_server(session_id, canonical_args);
     if (pid < 0) {
-        return 0;
+        result.status = "spawn_failed";
+        result.message = "Failed to spawn xtrace server";
+        return result;
     }
 
     // Get socket path
@@ -255,7 +296,9 @@ int SessionManager::create_session(const std::vector<std::string>& design_args) 
         // Kill the server process if it didn't start properly
         kill(pid, SIGTERM);
         unlink(sock_path);
-        return 0;
+        result.status = "startup_failed";
+        result.message = "Server did not become ready";
+        return result;
     }
 
     // Create session info
@@ -270,10 +313,23 @@ int SessionManager::create_session(const std::vector<std::string>& design_args) 
     // Add to registry
     if (!registry_->add(session)) {
         kill(pid, SIGTERM);
-        return 0;
+        result.status = "registry_failed";
+        result.message = "Failed to update session registry";
+        return result;
     }
 
-    return session_id;
+    result.ok = true;
+    result.reused = false;
+    result.session_id = session_id;
+    result.status = "healthy";
+    result.message = "Created healthy session";
+    result.info = session;
+    return result;
+}
+
+int SessionManager::create_session(const std::vector<std::string>& design_args) {
+    SessionEnsureResult result = ensure_session(design_args);
+    return result.ok ? result.session_id : 0;
 }
 
 bool SessionManager::kill_session(int session_id) {

@@ -5,7 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#define PROTOCOL_VERSION    "1.0"
+#define PROTOCOL_VERSION    "1.2"
 
 // Socket path configuration
 #define SOCK_PATH_PREFIX    ".xtrace"
@@ -14,11 +14,16 @@
 
 // Protocol commands (client -> server)
 #define CMD_PING            "PING"
+#define CMD_VERSION         "VERSION"
 #define CMD_QUIT            "QUIT"
 #define CMD_DRIVER          "DRIVER"
 #define CMD_LOAD            "LOAD"
 #define CMD_DRIVER_JSON     "DRIVER_JSON"
 #define CMD_LOAD_JSON       "LOAD_JSON"
+#define CMD_SIGNAL_RESOLVE  "SIGNAL_RESOLVE"
+#define CMD_SIGNAL_SEARCH   "SIGNAL_SEARCH"
+#define CMD_SIGNAL_RESOLVE_TEXT "SIGNAL_RESOLVE_TEXT"
+#define CMD_SIGNAL_SEARCH_TEXT  "SIGNAL_SEARCH_TEXT"
 
 // End-of-response marker (server -> client)
 #define END_MARKER          "##END##\n"

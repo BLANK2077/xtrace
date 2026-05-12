@@ -24,20 +24,33 @@ static std::string format_epoch(time_t t) {
     return buf;
 }
 
+static bool has_json_arg(int argc, char** argv) {
+    for (int i = 0; i < argc; ++i) {
+        if (strcmp(argv[i], "-json") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void print_help(const char* prog) {
     printf("XTrace - NPI-based Signal Tracing Tool\n\n");
     printf("Usage:\n");
     printf("  %s open -dbdir <simv.daidir> [args...]  Load design and create new session\n", prog);
     printf("  %s session list        List all active sessions\n", prog);
+    printf("  %s session ensure -dbdir <simv.daidir> [-json] [args...]  Ensure healthy session\n", prog);
     printf("  %s session kill <id>   Kill a specific session\n", prog);
     printf("  %s session kill all    Kill all sessions\n", prog);
     printf("  %s session doctor -s <sid> [-json]  Diagnose a session\n", prog);
     printf("  %s driver <sig> [-s <sid>] [-json]  Trace signal drivers\n", prog);
     printf("  %s load   <sig> [-s <sid>] [-json]  Trace signal loads\n", prog);
+    printf("  %s signal <resolve|search> <pattern> -s <sid> [-json] [--limit N]\n", prog);
+    printf("  %s query -dbdir <simv.daidir> <--driver|--load> <sig> [-json] [filters]\n", prog);
     printf("  %s close               Close the latest session\n", prog);
     printf("  %s help                Show this help\n", prog);
     printf("\nExamples:\n");
     printf("  %s open -dbdir simv.daidir\n", prog);
+    printf("  %s session ensure -dbdir simv.daidir -json\n", prog);
     printf("  %s session list\n", prog);
     printf("  %s session kill 1\n", prog);
 }
@@ -64,6 +77,45 @@ int cmd_open(int argc, char** argv) {
 
     printf("[Session %d] Database loaded: %s\n", session_id, argv[3]);
     return 0;
+}
+
+int cmd_session_ensure(int argc, char** argv) {
+    bool json_output = has_json_arg(argc, argv);
+    std::vector<std::string> design_args;
+
+    for (int i = 3; i < argc; ++i) {
+        if (strcmp(argv[i], "-json") == 0) {
+            continue;
+        } else {
+            design_args.push_back(argv[i]);
+        }
+    }
+
+    SessionManager manager;
+    SessionEnsureResult result = manager.ensure_session(design_args);
+
+    if (json_output) {
+        json payload = {
+            {"ok", result.ok},
+            {"session_id", result.session_id},
+            {"status", result.status.empty() ? (result.ok ? "healthy" : "error") : result.status},
+            {"reused", result.reused},
+            {"dbdir_path", result.info.dbdir_path},
+            {"message", result.message}
+        };
+        printf("%s\n", payload.dump(2).c_str());
+    } else if (result.ok) {
+        printf("[Session %d] %s: %s\n",
+               result.session_id,
+               result.reused ? "Reused" : "Database loaded",
+               result.info.dbdir_path.c_str());
+    } else {
+        fprintf(stderr, "Error: %s (status=%s)\n",
+                result.message.c_str(),
+                result.status.empty() ? "error" : result.status.c_str());
+    }
+
+    return result.ok ? 0 : 1;
 }
 
 int cmd_session_list() {

@@ -12,6 +12,12 @@ enum class TraceMode {
     Load
 };
 
+struct TraceOptions {
+    int limit = 0;
+    std::string role;
+    bool no_statement_only = false;
+};
+
 struct TraceRecord {
     std::string signal;
     std::string role;
@@ -27,11 +33,14 @@ struct TraceResult {
     std::vector<TraceRecord> results;
     std::vector<TraceRecord> control_dependencies;
     std::string error;
+    bool ok = true;
+    bool truncated = false;
+    bool has_statement_only = false;
 };
 
 class TraceEngine {
 public:
-    TraceResult trace(const std::string& signal, TraceMode mode);
+    TraceResult trace(const std::string& signal, TraceMode mode, const TraceOptions& options = TraceOptions());
 
     std::string render_text(const TraceResult& result) const;
     std::string render_json(const TraceResult& result) const;
@@ -39,6 +48,7 @@ public:
 private:
     TraceResult trace_driver(const std::string& signal);
     TraceResult trace_load(const std::string& signal);
+    void apply_options(TraceResult& result, const TraceOptions& options) const;
 
     void extract_expr_signals(npiHandle expr, std::vector<std::string>& signals) const;
     void extract_condition_deps(npiHandle condition,

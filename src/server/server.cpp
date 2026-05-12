@@ -1,12 +1,14 @@
 #include "server.h"
 #include "../protocol/protocol.h"
 #include "../trace/trace_engine.h"
+#include "../signal/signal_finder.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+#include <sstream>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -54,10 +56,72 @@ static bool send_all(int fd, const char* buf, size_t len) {
     return true;
 }
 
-static void handle_trace(int client_fd, const char* signal, TraceMode mode, bool json_output) {
+static std::vector<std::string> split_tokens(const char* text) {
+    std::vector<std::string> tokens;
+    std::istringstream in(text ? text : "");
+    std::string token;
+    while (in >> token) {
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+
+static TraceOptions parse_trace_options(const std::vector<std::string>& tokens,
+                                        size_t start_index) {
+    TraceOptions options;
+    for (size_t i = start_index; i < tokens.size(); ++i) {
+        if (tokens[i] == "--limit" && i + 1 < tokens.size()) {
+            options.limit = atoi(tokens[++i].c_str());
+        } else if (tokens[i] == "--role" && i + 1 < tokens.size()) {
+            options.role = tokens[++i];
+        } else if (tokens[i] == "--no-statement-only") {
+            options.no_statement_only = true;
+        }
+    }
+    return options;
+}
+
+static int parse_limit_option(const std::vector<std::string>& tokens, size_t start_index, int default_limit) {
+    int limit = default_limit;
+    for (size_t i = start_index; i < tokens.size(); ++i) {
+        if (tokens[i] == "--limit" && i + 1 < tokens.size()) {
+            limit = atoi(tokens[++i].c_str());
+        }
+    }
+    return limit;
+}
+
+static void handle_trace(int client_fd, const char* request, TraceMode mode, bool json_output) {
+    std::vector<std::string> tokens = split_tokens(request);
+    if (tokens.empty()) {
+        const char* err = ERROR_PREFIX "Missing signal\n";
+        send_all(client_fd, err, strlen(err));
+        send_all(client_fd, END_MARKER, strlen(END_MARKER));
+        return;
+    }
+
+    std::string signal = tokens[0];
+    TraceOptions options = parse_trace_options(tokens, 1);
     TraceEngine engine;
-    TraceResult result = engine.trace(signal, mode);
+    TraceResult result = engine.trace(signal, mode, options);
     std::string payload = json_output ? engine.render_json(result) : engine.render_text(result);
+    send_all(client_fd, payload.c_str(), payload.size());
+    send_all(client_fd, END_MARKER, strlen(END_MARKER));
+}
+
+static void handle_signal(int client_fd, const char* request, bool resolve, bool json_output) {
+    std::vector<std::string> tokens = split_tokens(request);
+    if (tokens.empty()) {
+        const char* err = ERROR_PREFIX "Missing signal pattern\n";
+        send_all(client_fd, err, strlen(err));
+        send_all(client_fd, END_MARKER, strlen(END_MARKER));
+        return;
+    }
+
+    int limit = parse_limit_option(tokens, 1, 20);
+    SignalFinder finder;
+    SignalSearchResult result = resolve ? finder.resolve(tokens[0], limit) : finder.search(tokens[0], limit);
+    std::string payload = json_output ? finder.render_json(result) : finder.render_text(result);
     send_all(client_fd, payload.c_str(), payload.size());
     send_all(client_fd, END_MARKER, strlen(END_MARKER));
 }
@@ -99,6 +163,12 @@ static bool handle_client(int client_fd, bool& should_quit) {
         return true;
     }
 
+    if (strcmp(cmd, CMD_VERSION) == 0) {
+        const char* version = PROTOCOL_VERSION "\n" END_MARKER;
+        send_all(client_fd, version, strlen(version));
+        return true;
+    }
+
     if (strncmp(cmd, CMD_DRIVER_JSON, strlen(CMD_DRIVER_JSON)) == 0) {
         const char* rest = cmd + strlen(CMD_DRIVER_JSON);
         while (*rest == ' ') rest++;
@@ -112,6 +182,38 @@ static bool handle_client(int client_fd, bool& should_quit) {
         while (*rest == ' ') rest++;
 
         handle_trace(client_fd, rest, TraceMode::Load, true);
+        return true;
+    }
+
+    if (strncmp(cmd, CMD_SIGNAL_RESOLVE_TEXT, strlen(CMD_SIGNAL_RESOLVE_TEXT)) == 0) {
+        const char* rest = cmd + strlen(CMD_SIGNAL_RESOLVE_TEXT);
+        while (*rest == ' ') rest++;
+
+        handle_signal(client_fd, rest, true, false);
+        return true;
+    }
+
+    if (strncmp(cmd, CMD_SIGNAL_SEARCH_TEXT, strlen(CMD_SIGNAL_SEARCH_TEXT)) == 0) {
+        const char* rest = cmd + strlen(CMD_SIGNAL_SEARCH_TEXT);
+        while (*rest == ' ') rest++;
+
+        handle_signal(client_fd, rest, false, false);
+        return true;
+    }
+
+    if (strncmp(cmd, CMD_SIGNAL_RESOLVE, strlen(CMD_SIGNAL_RESOLVE)) == 0) {
+        const char* rest = cmd + strlen(CMD_SIGNAL_RESOLVE);
+        while (*rest == ' ') rest++;
+
+        handle_signal(client_fd, rest, true, true);
+        return true;
+    }
+
+    if (strncmp(cmd, CMD_SIGNAL_SEARCH, strlen(CMD_SIGNAL_SEARCH)) == 0) {
+        const char* rest = cmd + strlen(CMD_SIGNAL_SEARCH);
+        while (*rest == ' ') rest++;
+
+        handle_signal(client_fd, rest, false, true);
         return true;
     }
 
@@ -164,36 +266,24 @@ int server_main(int argc, char** argv) {
         npi_argv[i] = argv[arg_idx + i - 1];
     }
 
-    // Redirect stdout to capture NPI init messages, but keep a copy
-    int stdout_copy = dup(STDOUT_FILENO);
+    // Keep session startup quiet so CLI JSON output remains machine-parseable.
+    daemonize_io();
 
     // Initialize NPI
     int result = npi_init(npi_argc, npi_argv);
     if (result == 0) {
-        dprintf(stdout_copy, "[Session %d] ERROR: npi_init failed\n", g_session_id);
-        close(stdout_copy);
         delete[] npi_argv;
         return 1;
     }
 
     result = npi_load_design(npi_argc, npi_argv);
     if (result == 0) {
-        dprintf(stdout_copy, "[Session %d] ERROR: npi_load_design failed\n", g_session_id);
         npi_end();
-        close(stdout_copy);
         delete[] npi_argv;
         return 1;
     }
 
     delete[] npi_argv;
-
-    // Print session ID to indicate successful initialization
-    dprintf(stdout_copy, "[Session %d] Ready\n", g_session_id);
-    fflush(stdout);
-    close(stdout_copy);
-
-    // Now daemonize I/O
-    daemonize_io();
 
     // Set up signal handlers
     signal(SIGTERM, cleanup_and_exit);

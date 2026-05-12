@@ -16,6 +16,9 @@ int cmd_session_kill(const char* id_str);
 // xtrace session doctor -s <sid> [-json] - diagnose a session
 int cmd_session_doctor(int argc, char** argv);
 
+// xtrace session ensure -dbdir <simv.daidir> [-json] [args...] - ensure healthy session
+int cmd_session_ensure(int argc, char** argv);
+
 // xtrace close - close latest session
 int cmd_close();
 
