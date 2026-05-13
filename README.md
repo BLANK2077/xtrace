@@ -203,7 +203,21 @@ xtrace/
 
 - Synopsys Verdi `V-2023.12-SP2+`
 - NPI 库 (`libNPI.so`, `libnpiL1.so`)
-- C++11 编译器
+- C++11 编译器，需支持 libstdc++ new C++11 ABI (`std::__cxx11::basic_string`)
+
+### 已验证工具版本
+
+- Verdi: `V-2023.12-SP2` for `linux64`
+- VCS: `V-2023.12-SP2_Full64`
+- G++: GCC `8.5.0`
+
+说明：
+
+- 使用 VCS 编译测试 daidir 时，本机需要设置 `VCS_TARGET_ARCH=linux64`。
+- NPI L1 的 FSDB/RTL C++ API 使用 `std::string`，需要和 Synopsys `libnpiL1.so`
+  的 C++ ABI 一致。若链接时报 `std::string` / `std::__cxx11::basic_string`
+  相关 undefined reference，请使用 GCC 5+，并避免
+  `-D_GLIBCXX_USE_CXX11_ABI=0`。
 
 ## 已知限制
 
