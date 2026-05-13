@@ -1,100 +1,105 @@
+English | [中文](README.zh.md)
+
 # XTrace - NPI Signal Tracing Tool
 
-XTrace 是一个基于 Synopsys NPI (Native Programming Interface) 的信号追踪 CLI 工具，采用 Client-Server 架构，支持多 Session 并发管理、信号驱动/负载追踪以及控制依赖分析。
+XTrace is a Synopsys NPI (Native Programming Interface) based signal tracing CLI. It uses a client-server architecture and supports concurrent session management, signal driver/load tracing, and control dependency analysis.
 
-## 功能特性
+## Features
 
-### Session 管理
-- **多 Session 并发** — 同时管理多个设计数据库，每个 Session 独立加载设计
-- **自动分配 Session ID** — 无需手动指定 ID
-- **Session 生命周期管理** — 创建 (`open`)、列出 (`session list`)、关闭 (`session kill` / `close`)
-- **Agent 友好入口** — `session ensure -dbdir ... [-json]` 可复用或创建健康 Session，`query` 可一次完成 ensure + trace
-- **僵死 Session 自动清理** — 自动检测并回收异常退出的 Session
-- **Session 健康诊断** — `session doctor -s <sid> [-json]` 区分 registry 缺失、进程退出、socket 缺失、连接失败和 PING 失败
-- **Daidir 指纹校验** — `open` 只接受 `-dbdir <*.daidir>`，并记录 canonical path、mtime、size、dev、inode
-- **定向命令** — 支持通过 `-s <session_id>` 向指定 Session 发送命令
+### Session Management
 
-### 信号追踪 (Driver / Load)
-- **`driver <signal>`** — 追踪信号的驱动源，输出驱动信号名及对应的 RTL 源代码行
-- **`load <signal>`** — 追踪信号的负载，输出负载信号名及对应的 RTL 源代码行
-- **JSON 输出** — `driver/load ... -json` 输出结构化 `ok/query/mode/results/control_dependencies` 和摘要字段
-- **结果过滤** — 支持 `--limit <N>`、`--role <role>`、`--no-statement-only`
-- **信号发现** — `signal resolve/search` 用于解析完整信号或搜索候选信号
-- **源代码定位** — 每个 driver/load 结果都附带源文件名和行号，以及对应源代码内容
-- **Interface 支持** — 正确处理 SystemVerilog interface 成员引用 (`npiOperation`) 和连续赋值 (`npiContAssign`)
+- **Concurrent sessions**: manage multiple design databases, with each session loading one database independently.
+- **Automatic session IDs**: no manual ID allocation is required.
+- **Session lifecycle management**: create (`open`), list (`session list`), and close (`session kill` / `close`) sessions.
+- **Agent-friendly entry points**: `session ensure -dbdir ... [-json]` reuses or creates a healthy session, and `query` combines ensure + trace in one command.
+- **Stale session cleanup**: detects and removes abnormal server sessions.
+- **Session health diagnostics**: `session doctor -s <sid> [-json]` distinguishes registry, process, socket, connect, and PING failures.
+- **Daidir fingerprint checking**: `open` only accepts `-dbdir <*.daidir>` and records canonical path, mtime, size, dev, and inode.
+- **Targeted commands**: use `-s <session_id>` to send commands to a specific session.
 
-### 控制依赖追踪
-- 当 NPI 对 `always` 块中的过程赋值返回空结果时，自动通过 AST 遍历提取控制目标信号的条件表达式
-- 支持 `if`/`case`/`while`/`wait`/`always` 等结构中的控制依赖分析
+### Signal Tracing (Driver / Load)
 
-## 编译
+- **`driver <signal>`**: trace signal drivers and report source signal names with RTL source locations.
+- **`load <signal>`**: trace signal loads and report load-side signal names with RTL source locations.
+- **JSON output**: `driver/load ... -json` emits structured `ok/query/mode/results/control_dependencies` plus summary fields.
+- **Result filters**: supports `--limit <N>`, `--role <role>`, and `--no-statement-only`.
+- **Signal discovery**: `signal resolve/search` resolves full signal names or searches candidate signals.
+- **Source locations**: each driver/load result includes file, line, and source text when available.
+- **Interface support**: handles SystemVerilog interface member references (`npiOperation`) and continuous assignments (`npiContAssign`).
 
-确保已设置环境变量 `VERDI_HOME`：
+### Control Dependency Tracing
+
+- When NPI returns no direct result for procedural assignments in `always` blocks, XTrace falls back to AST traversal to extract control conditions for target signals.
+- Supports control dependencies from `if`, `case`, `while`, `wait`, and `always` constructs.
+
+## Build
+
+Set `VERDI_HOME` first:
 
 ```bash
 export VERDI_HOME=/path/to/verdi/V-2023.12-SP2
 export LD_LIBRARY_PATH=$VERDI_HOME/share/NPI/lib/LINUX64:$LD_LIBRARY_PATH
 ```
 
-然后编译：
+Then build:
 
 ```bash
 cd /home/yian/xtrace
 make
 ```
 
-运行时推荐使用 `tools/xtrace-env`，它会根据 `VERDI_HOME` 自动设置 NPI 动态库路径：
+At runtime, prefer `tools/xtrace-env`; it sets the NPI runtime library path from `VERDI_HOME`:
 
 ```bash
 tools/xtrace-env help
 ```
 
-## 使用
+## Usage
 
-### Session 管理
+### Session Management
 
 ```bash
-# 创建新 Session (加载 VCS daidir)
+# Create a new session by loading a VCS daidir.
 tools/xtrace-env open -dbdir /path/to/simv.daidir
 [Session 1] Database loaded.
 
-# 确保同一个 daidir 有健康 Session；适合脚本和 agent 使用
+# Ensure a healthy session for the same daidir. This is recommended for scripts and agents.
 tools/xtrace-env session ensure -dbdir /path/to/simv.daidir -json
 
-# 列出所有 Session
+# List all sessions.
 tools/xtrace-env session list
 
-# 诊断指定 Session
+# Diagnose a session.
 tools/xtrace-env session doctor -s 1
 tools/xtrace-env session doctor -s 1 -json
 
-# 关闭指定 Session
+# Kill a specific session.
 tools/xtrace-env session kill 1
 
-# 关闭所有 Session
+# Kill all sessions.
 tools/xtrace-env session kill all
 
-# 关闭最新 Session
+# Close the latest session.
 tools/xtrace-env close
 ```
 
-### 信号追踪
+### Signal Tracing
 
 ```bash
-# 追踪驱动
+# Trace drivers.
 tools/xtrace-env driver test_top.uut.bus.ready -s 1
 tools/xtrace-env driver test_top.uut.bus.ready -s 1 -json
 
-# 追踪负载
+# Trace loads.
 tools/xtrace-env load test_top.valid_in -s 1
 tools/xtrace-env load test_top.valid_in -s 1 -json
 
-# 过滤 trace 结果
+# Filter trace results.
 tools/xtrace-env driver test_top.uut.bus.ready -s 1 -json --limit 5
 tools/xtrace-env load test_top.valid_in -s 1 -json --role rhs_use --no-statement-only
 ```
 
-`driver/load -json` 使用同一套 trace engine 渲染，典型输出字段如下：
+`driver/load -json` uses the same trace engine as text output. A typical JSON payload is:
 
 ```json
 {
@@ -120,77 +125,77 @@ tools/xtrace-env load test_top.valid_in -s 1 -json --role rhs_use --no-statement
 }
 ```
 
-### AI Agent 推荐入口
+### Recommended AI Agent Entry Point
 
 ```bash
-# 一条命令完成 session ensure + driver trace
+# Ensure session + driver trace in one command.
 tools/xtrace-env query -dbdir /path/to/simv.daidir --driver test_top.uut.bus.ready -json --limit 10
 
-# 一条命令完成 session ensure + load trace
+# Ensure session + load trace in one command.
 tools/xtrace-env query -dbdir /path/to/simv.daidir --load test_top.valid_in -json --role rhs_use
 ```
 
-`query -json` 输出包含 `session` 和 `trace` 两段；失败时输出 `ok=false`、`status` 和 `message`，便于 agent 做下一步决策。
+`query -json` returns both `session` and `trace` sections. On failure it reports `ok=false`, `status`, and `message`, which makes it suitable for agent decision loops.
 
-### 信号发现
+### Signal Discovery
 
 ```bash
-# 解析完整信号名
+# Resolve a full signal name.
 tools/xtrace-env signal resolve test_top.uut.bus.ready -s 1 -json
 
-# 按短名或片段搜索候选信号
+# Search candidate signals by leaf name or substring.
 tools/xtrace-env signal search ready -s 1 -json --limit 20
 ```
 
-JSON 输出包含 `ok/query/matches/count/truncated`；找不到信号时返回非 0，并给出 `status=not_found`。
+JSON output includes `ok/query/matches/count/truncated`. Missing signals return non-zero with `status=not_found`.
 
-### Session 诊断退出码
+### Session Doctor Exit Codes
 
-`session doctor` 是脚本化健康检查入口：
+`session doctor` is the scriptable health-check entry point:
 
-- 健康 Session 返回 `0`，状态为 `healthy`
-- 不健康 Session 返回非 `0`
-- 缺少 `-s <sid>` 或非法 Session ID 返回非 `0`
-- JSON 输出包含 `session_id`、`healthy`、`status`、`message`、`pid`、`socket_path`、`design_file`、`dbdir_path` 和 daidir metadata
+- Healthy sessions return `0` with status `healthy`.
+- Unhealthy sessions return non-zero.
+- Missing `-s <sid>` or invalid session IDs return non-zero.
+- JSON output includes `session_id`, `healthy`, `status`, `message`, `pid`, `socket_path`, `design_file`, `dbdir_path`, and daidir metadata.
 
-状态值：
+Status values:
 
-- `dbdir_missing` — daidir 路径不存在或不是目录
-- `dbdir_changed` — daidir 的 mtime/size/dev/inode 与 open 时记录不一致
-- `registry_missing` — registry 中没有该 Session
-- `process_exited` — server 进程不存在
-- `socket_missing` — socket 文件缺失
-- `connect_failed` — socket 存在但无法连接
-- `ping_failed` — server 未响应 `PING`
-- `healthy` — registry、进程、socket、连接和 `PING/PONG` 均正常
+- `dbdir_missing`: the daidir path is missing or is not a directory.
+- `dbdir_changed`: daidir mtime/size/dev/inode differs from the metadata captured at open time.
+- `registry_missing`: the session is not in the registry.
+- `process_exited`: the server process no longer exists.
+- `socket_missing`: the socket file is missing.
+- `connect_failed`: the socket exists but cannot be connected.
+- `ping_failed`: the server did not respond to `PING`.
+- `healthy`: registry, process, socket, connect, and `PING/PONG` checks all passed.
 
-## 项目结构
+## Project Layout
 
-```
+```text
 xtrace/
 ├── src/
-│   ├── main.cpp                    # CLI 入口与命令路由
-│   ├── commands/                   # 命令实现
-│   │   ├── cmd_session.cpp         # Session 管理命令
-│   │   └── cmd_trace.cpp           # Driver/Load 追踪命令
-│   ├── session/                    # Session 管理核心
+│   ├── main.cpp                    # CLI entry point and command routing
+│   ├── commands/                   # Command implementations
+│   │   ├── cmd_session.cpp         # Session management commands
+│   │   └── cmd_trace.cpp           # Driver/load tracing commands
+│   ├── session/                    # Session management core
 │   │   ├── session_manager.cpp
 │   │   └── session_registry.cpp
-│   ├── client/                     # 客户端通信
+│   ├── client/                     # Client communication
 │   │   └── client.cpp
-│   ├── server/                     # NPI Server 主逻辑
+│   ├── server/                     # NPI server logic
 │   │   └── server.cpp
-│   ├── trace/                      # Driver/Load trace engine
+│   ├── trace/                      # Driver/load trace engine
 │   │   ├── trace_engine.cpp
 │   │   └── trace_engine.h
 │   ├── signal/                     # Signal resolve/search
 │   │   ├── signal_finder.cpp
 │   │   └── signal_finder.h
-│   ├── control_dep/                # 控制依赖分析
+│   ├── control_dep/                # Control dependency analysis
 │   │   ├── control_dep.cpp
 │   │   └── control_dep.h
 │   └── protocol/
-│       └── protocol.h              # 通信协议定义
+│       └── protocol.h              # Protocol definitions
 ├── tools/
 │   └── xtrace-env                  # Runtime wrapper for VERDI_HOME/LD_LIBRARY_PATH
 ├── skill/
@@ -199,30 +204,26 @@ xtrace/
 └── README.md
 ```
 
-## 依赖
+## Dependencies
 
 - Synopsys Verdi `V-2023.12-SP2+`
-- NPI 库 (`libNPI.so`, `libnpiL1.so`)
-- C++11 编译器，需和所用 Verdi/NPI 库的 libstdc++ ABI 匹配
+- NPI libraries (`libNPI.so`, `libnpiL1.so`)
+- C++11 compiler whose libstdc++ ABI matches the selected Verdi/NPI libraries
 
-### 已验证工具版本
+### Tested Tool Versions
 
 - Verdi: `V-2023.12-SP2` for `linux64`
 - VCS: `V-2023.12-SP2_Full64`
 - G++: GCC `8.5.0`
 
-说明：
+Notes:
 
-- 使用 VCS 编译测试 daidir 时，本机需要设置 `VCS_TARGET_ARCH=linux64`。
-- NPI L1 的 FSDB/RTL C++ API 使用 `std::string`，需要和 Synopsys `libnpiL1.so`
-  的 C++ ABI 一致。
-- Verdi 2020 系列的 NPI 库可使用 GCC 4.8 直接编译通过。
-- Verdi 2023 系列的 NPI 库导出 `std::__cxx11::basic_string` new ABI 符号，
-  需要使用 GCC 5+；如果链接时报 `std::string` /
-  `std::__cxx11::basic_string` 相关 undefined reference，请升级 g++，并避免
-  `-D_GLIBCXX_USE_CXX11_ABI=0`。
+- Building test daidir databases with VCS on this machine requires `VCS_TARGET_ARCH=linux64`.
+- NPI L1 FSDB/RTL C++ APIs use `std::string`, so the C++ ABI must match Synopsys `libnpiL1.so`.
+- Verdi 2020 NPI libraries can be built directly with GCC 4.8.
+- Verdi 2023 NPI libraries export new-ABI symbols such as `std::__cxx11::basic_string`, so GCC 5+ is required. If you see undefined references involving `std::string` / `std::__cxx11::basic_string`, upgrade g++ and avoid `-D_GLIBCXX_USE_CXX11_ABI=0`.
 
-## 已知限制
+## Known Limitations
 
-- 当前基于 **SV Language Model**（RTL 级），对于某些 NPI 本身不支持的过程赋值场景，driver/load 可能返回空结果
-- 通用名称追踪模式暂不做模块端口引用路径映射，某些深层 interface 驱动源可能需要提供模块端口引用路径才能追踪
+- XTrace currently uses the **SV Language Model** at RTL level. Some procedural assignment cases unsupported by NPI may still return empty driver/load results.
+- Generic-name tracing does not yet remap all module port reference paths. Some deep interface driver sources may require the module port reference path for accurate tracing.
