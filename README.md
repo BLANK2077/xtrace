@@ -32,6 +32,22 @@ XTrace is a Synopsys NPI (Native Programming Interface) based signal tracing CLI
 - When NPI returns no direct result for procedural assignments in `always` blocks, XTrace falls back to AST traversal to extract control conditions for target signals.
 - Supports control dependencies from `if`, `case`, `while`, `wait`, and `always` constructs.
 
+## LSF / bsub Usage
+
+XTrace uses a local daemon per session. The daemon is reached through a Unix domain socket, and session health checks use local PID and `/proc` state. Because of this, `open`, `session ensure`, `query`, `driver`, `load`, and `session kill` must run on the same machine.
+
+In chip-company LSF environments, avoid submitting XTrace commands to a normal queue that may dispatch each command to a different host. The recommended setup is to ask IT to create a dedicated queue that contains exactly one suitable machine for XTrace/XWave-style NPI tools. Then submit all XTrace commands to that queue:
+
+```bash
+bsub -q <xtrace_queue> -I "cd <workdir> && tools/xtrace-env session ensure -dbdir /path/to/simv.daidir -json"
+bsub -q <xtrace_queue> -I "cd <workdir> && tools/xtrace-env query -dbdir /path/to/simv.daidir --driver top.sig -json"
+bsub -q <xtrace_queue> -I "cd <workdir> && tools/xtrace-env session kill 1"
+```
+
+The dedicated machine should have access to the shared daidir path and a consistent Verdi/NPI/license environment. If a dedicated single-host queue is not available, the next simplest option is to use `bsub -m <host>` to pin all commands to one host.
+
+If fixed-machine operation is still not acceptable, the project architecture needs additional work, such as a TCP daemon, automatic remote command forwarding, or a no-daemon single-command mode. Those options are more complex and should be treated as code changes rather than normal usage.
+
 ## Build
 
 Set `VERDI_HOME` first:
