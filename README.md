@@ -178,6 +178,16 @@ Implemented AI actions include:
 
 AI trace responses add dependency-oriented fields such as `rhs_signals`, `dependency_edges`, `assignment`, `confidence`, and `confidence_reason` without changing the legacy `driver/load/query -json` output.
 
+The higher-level causal actions build on the same NPI trace evidence:
+
+- `expr.normalize` returns the RHS AST from a real NPI assignment when `args.signal` is provided; raw `args.expr` is accepted as a low-confidence string fallback.
+- `procedural.assignment` groups target assignments, default/unconditional assignments, branch assignments, active conditions, and source evidence.
+- `sequential.update` reports clock/reset hints, event controls, and reset/increment/decrement/hold/update rules.
+- `fsm.explain` summarizes state transition candidates from sequential update rules.
+- `counter.explain` classifies counter-like reset/increment/decrement/hold rules and marks confidence explicitly.
+
+When NPI cannot expose a complete expression or block structure, the AI action still returns source/decompile evidence with `confidence=low` or `medium`; it does not promote fallback evidence to high confidence.
+
 ### Signal Discovery
 
 ```bash

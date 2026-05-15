@@ -50,6 +50,39 @@ bool starts_with(const std::string& s, const std::string& prefix) {
     return s.compare(0, prefix.size(), prefix) == 0;
 }
 
+std::string leaf_name(const std::string& signal) {
+    size_t dot = signal.rfind('.');
+    std::string leaf = dot == std::string::npos ? signal : signal.substr(dot + 1);
+    size_t bracket = leaf.find('[');
+    if (bracket != std::string::npos) leaf = leaf.substr(0, bracket);
+    return leaf;
+}
+
+std::string lower_copy(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) out.push_back((char)std::tolower((unsigned char)c));
+    return out;
+}
+
+bool contains_word_like(const std::string& text, const std::string& token) {
+    return lower_copy(text).find(lower_copy(token)) != std::string::npos;
+}
+
+std::string next_token_after(const std::string& text, const std::string& key) {
+    size_t pos = lower_copy(text).find(lower_copy(key));
+    if (pos == std::string::npos) return "";
+    pos += key.size();
+    while (pos < text.size() && std::isspace((unsigned char)text[pos])) pos++;
+    size_t begin = pos;
+    while (pos < text.size()) {
+        char c = text[pos];
+        if (!(std::isalnum((unsigned char)c) || c == '_' || c == '.' || c == '[' || c == ']')) break;
+        pos++;
+    }
+    return begin < pos ? text.substr(begin, pos - begin) : "";
+}
+
 json session_to_json(const SessionInfo& s) {
     return {
         {"id", s.session_id},
@@ -285,6 +318,48 @@ json parse_expr_ast(const std::string& expr) {
     return parse_atom(s);
 }
 
+void collect_ast_signals(const json& node, std::set<std::string>& signals) {
+    if (!node.is_object()) return;
+    std::string kind = node.value("kind", node.value("type", ""));
+    if (kind == "signal") {
+        std::string name = node.value("name", "");
+        if (!name.empty()) signals.insert(name);
+    }
+    if (node.contains("base_signal") && node["base_signal"].is_string()) {
+        std::string name = node["base_signal"].get<std::string>();
+        if (!name.empty()) signals.insert(name);
+    }
+    for (const auto& item : node.items()) {
+        if (item.value().is_object()) collect_ast_signals(item.value(), signals);
+        if (item.value().is_array()) {
+            for (const auto& elem : item.value()) collect_ast_signals(elem, signals);
+        }
+    }
+}
+
+std::string expr_op(const json& expr) {
+    if (!expr.is_object()) return "";
+    return expr.value("op", "");
+}
+
+bool expr_mentions_signal(const json& expr, const std::string& signal) {
+    std::set<std::string> signals;
+    collect_ast_signals(expr, signals);
+    std::string target_leaf = leaf_name(signal);
+    for (const auto& name : signals) {
+        if (name == signal || leaf_name(name) == target_leaf) return true;
+    }
+    return false;
+}
+
+json signal_array_from_ast(const json& expr) {
+    std::set<std::string> signals;
+    collect_ast_signals(expr, signals);
+    json out = json::array();
+    for (const auto& name : signals) out.push_back(name);
+    return out;
+}
+
 std::string rhs_from_source(const std::string& source) {
     std::string s = trim(source);
     size_t eq = std::string::npos;
@@ -488,10 +563,26 @@ json canonicalize_signal(const json& request) {
     std::string canonical = query;
     json matches = data.value("matches", json::array());
     if (!matches.empty()) canonical = matches[0].value("signal", query);
+    bool ambiguous = matches.size() > 1;
+    std::string base = canonical;
+    std::string select;
+    size_t bracket = canonical.find('[');
+    if (bracket != std::string::npos) {
+        base = canonical.substr(0, bracket);
+        select = canonical.substr(bracket);
+    }
+    size_t dot = base.rfind('.');
     resolved["summary"]["canonical"] = canonical;
+    resolved["summary"]["ambiguous"] = ambiguous;
     resolved["data"]["canonical"] = canonical;
     resolved["data"]["rtl_path"] = canonical;
-    resolved["data"]["aliases"] = json::array({query, canonical});
+    resolved["data"]["query"] = query;
+    resolved["data"]["leaf"] = leaf_name(canonical);
+    resolved["data"]["scope"] = dot == std::string::npos ? "" : base.substr(0, dot);
+    resolved["data"]["base_signal"] = base;
+    resolved["data"]["select"] = select;
+    resolved["data"]["ambiguous"] = ambiguous;
+    resolved["data"]["aliases"] = query == canonical ? json::array({canonical}) : json::array({query, canonical});
     resolved["data"]["fsdb_candidates"] = json::array({canonical});
     resolved["data"]["port_mappings"] = json::array();
     return resolved;
@@ -523,6 +614,24 @@ json graph_from_trace(const json& trace, const std::string& root) {
         graph_edges.push_back(e);
     }
     return {{"nodes", nodes}, {"edges", graph_edges}};
+}
+
+bool edge_type_allowed(const json& args, const json& edge) {
+    json types = args.value("dependency_types", json::array());
+    if (types.empty()) return true;
+    std::string edge_type = edge.value("type", "");
+    std::string assignment_type = edge.value("assignment_type", "");
+    for (const auto& t : types) {
+        if (!t.is_string()) continue;
+        std::string want = t.get<std::string>();
+        if (edge_type == want || assignment_type == want) return true;
+        if (want == "data" && (edge_type == "data_dependency" ||
+                               edge_type == "continuous_assignment" ||
+                               edge_type == "procedural_assignment")) return true;
+        if (want == "control" && edge_type == "control_dependency") return true;
+        if (want == "load" && edge_type == "load_dependency") return true;
+    }
+    return false;
 }
 
 json trace_expand_like(const json& request, bool explain_only = false) {
@@ -576,6 +685,7 @@ json trace_expand_like(const json& request, bool explain_only = false) {
         traces.push_back(trace);
         if (trace.value("truncated", false)) truncated = true;
         for (const auto& e : trace.value("dependency_edges", json::array())) {
+            if (!edge_type_allowed(args, e)) continue;
             if ((int)all_edges.size() >= max_edges) {
                 truncated = true;
                 break;
@@ -650,13 +760,54 @@ json trace_path(const json& request) {
     }
     json response = trace_expand_like(expand_req, false);
     if (!response.value("ok", false)) return response;
+    int max_paths = request.value("limits", json::object()).value("max_paths", 10);
+    if (max_paths <= 0) max_paths = 10;
     bool found = false;
     json paths = json::array();
-    for (const auto& e : response["data"]["graph"].value("edges", json::array())) {
-        if ((from.empty() || e.value("from_signal", "") == from) &&
-            (to.empty() || e.value("to_signal", "") == to)) {
+    json edges = response["data"]["graph"].value("edges", json::array());
+    if (from.empty() || to.empty()) {
+        for (const auto& e : edges) {
+            if ((from.empty() || e.value("from_signal", "") == from) &&
+                (to.empty() || e.value("to_signal", "") == to)) {
+                found = true;
+                paths.push_back(json::array({e}));
+                if ((int)paths.size() >= max_paths) break;
+            }
+        }
+    } else {
+        std::vector<json> edge_vec;
+        for (const auto& e : edges) edge_vec.push_back(e);
+        std::vector<std::pair<std::string, json>> queue;
+        queue.push_back(std::make_pair(from, json::array()));
+        std::set<std::string> visited;
+        for (size_t qi = 0; qi < queue.size() && (int)paths.size() < max_paths; ++qi) {
+            std::string current = queue[qi].first;
+            json path = queue[qi].second;
+            if (current == to) {
+                found = true;
+                paths.push_back(path);
+                continue;
+            }
+            if (visited.count(current)) continue;
+            visited.insert(current);
+            for (const auto& e : edge_vec) {
+                if (e.value("from_signal", "") != current) continue;
+                std::string next = e.value("to_signal", "");
+                if (next.empty()) continue;
+                json next_path = path;
+                next_path.push_back(e);
+                queue.push_back(std::make_pair(next, next_path));
+            }
+        }
+    }
+    if (!found) {
+        for (const auto& e : edges) {
+            if ((from.empty() || e.value("from_signal", "") == from) &&
+                (to.empty() || e.value("to_signal", "") == to)) {
             found = true;
             paths.push_back(json::array({e}));
+                break;
+            }
         }
     }
     response["summary"]["from_signal"] = from;
@@ -665,6 +816,51 @@ json trace_path(const json& request) {
     response["summary"]["found"] = found;
     response["data"]["paths"] = paths;
     return response;
+}
+
+json infer_enclosing_block(const std::vector<std::string>& lines, int line) {
+    json enclosing = {{"type", "unknown"}, {"name", ""}, {"begin_line", 1}, {"end_line", (int)lines.size()}};
+    int best_line = 0;
+    for (int i = std::min(line, (int)lines.size()); i >= 1; --i) {
+        std::string text = trim(lines[i - 1]);
+        std::string low = lower_copy(text);
+        std::string type;
+        std::string name;
+        if (starts_with(low, "module ") || low.find(" module ") != std::string::npos) {
+            type = "module";
+            name = next_token_after(text, "module");
+        } else if (low.find("always_ff") != std::string::npos) {
+            type = "always_ff";
+        } else if (low.find("always_comb") != std::string::npos) {
+            type = "always_comb";
+        } else if (low.find("always") != std::string::npos) {
+            type = "always";
+        } else if (low.find("case") != std::string::npos) {
+            type = "case";
+        } else if (low.find("if") != std::string::npos && low.find("(") != std::string::npos) {
+            type = "if";
+        } else if (low.find("begin") != std::string::npos) {
+            type = "begin";
+        }
+        if (!type.empty()) {
+            enclosing["type"] = type;
+            enclosing["name"] = name;
+            enclosing["begin_line"] = i;
+            best_line = i;
+            break;
+        }
+    }
+    if (best_line > 0) {
+        std::string end_token = enclosing["type"] == "module" ? "endmodule" :
+                                enclosing["type"] == "case" ? "endcase" : "end";
+        for (int i = line; i <= (int)lines.size(); ++i) {
+            if (lower_copy(lines[i - 1]).find(end_token) != std::string::npos) {
+                enclosing["end_line"] = i;
+                break;
+            }
+        }
+    }
+    return enclosing;
 }
 
 json source_context(const json& request) {
@@ -691,7 +887,7 @@ json source_context(const json& request) {
     response["summary"] = {{"file", file}, {"line", line}};
     response["data"] = {
         {"context", ctx},
-        {"enclosing", {{"type", "unknown"}, {"name", ""}, {"begin_line", begin}, {"end_line", end}}}
+        {"enclosing", infer_enclosing_block(lines, line)}
     };
     return response;
 }
@@ -725,33 +921,250 @@ json control_explain(const json& request) {
     return trace_resp;
 }
 
-json procedural_or_seq_placeholder(const json& request, const std::string& kind) {
+json condition_from_control_dep(const json& dep) {
+    std::string source = dep.value("source", "");
+    std::string cond = dep.value("condition_text", "");
+    if (cond.empty()) {
+        cond = source;
+        size_t lparen = cond.find('(');
+        size_t rparen = cond.rfind(')');
+        if (lparen != std::string::npos && rparen != std::string::npos && rparen > lparen) {
+            cond = cond.substr(lparen + 1, rparen - lparen - 1);
+        }
+    }
+    return {{"text", trim(cond)}, {"ast", dep.value("condition", parse_expr_ast(cond))},
+            {"signals", dep.value("condition_signals", json::array())},
+            {"file", dep.value("file", "")}, {"line", dep.value("line", 0)},
+            {"source", source}, {"confidence", dep.value("confidence", "medium")}};
+}
+
+json infer_clock_reset_from_assignment(const json& assignment, const json& control_deps) {
+    json out = {{"clock", nullptr}, {"reset", nullptr}, {"event_controls", json::array()}};
+    std::string file = assignment.value("location", json::object()).value("file", "");
+    int line = assignment.value("location", json::object()).value("line", 0);
+    if (!file.empty() && line > 0) {
+        std::ifstream in(file.c_str());
+        std::vector<std::string> lines;
+        std::string s;
+        while (std::getline(in, s)) lines.push_back(s);
+        int begin = std::max(1, line - 40);
+        for (int i = line; i >= begin; --i) {
+            std::string text = lines[i - 1];
+            std::string low = lower_copy(text);
+            if (low.find("@") == std::string::npos &&
+                low.find("always_ff") == std::string::npos &&
+                low.find("always ") == std::string::npos) {
+                continue;
+            }
+            std::string pos = next_token_after(text, "posedge");
+            std::string neg = next_token_after(text, "negedge");
+            if (!pos.empty()) {
+                out["clock"] = pos;
+                out["event_controls"].push_back({{"edge", "posedge"}, {"signal", pos}, {"line", i}, {"source", trim(text)}});
+            }
+            if (!neg.empty()) {
+                out["reset"] = neg;
+                out["event_controls"].push_back({{"edge", "negedge"}, {"signal", neg}, {"line", i}, {"source", trim(text)}});
+            }
+            if (!pos.empty() || !neg.empty()) break;
+        }
+    }
+    for (const auto& dep : control_deps) {
+        std::string sig = dep.value("signal", "");
+        if (out["reset"].is_null() && (contains_word_like(sig, "rst") || contains_word_like(sig, "reset"))) {
+            out["reset"] = sig;
+        }
+    }
+    return out;
+}
+
+std::string classify_update_rule(const json& assignment, const json& condition, const std::string& target) {
+    std::string cond_text = lower_copy(condition.value("text", ""));
+    std::string source = lower_copy(assignment.value("source", ""));
+    json rhs = assignment.value("rhs", json::object());
+    std::string op = expr_op(rhs);
+    if (cond_text.find("rst") != std::string::npos || cond_text.find("reset") != std::string::npos ||
+        source.find("rst") != std::string::npos || source.find("reset") != std::string::npos) {
+        return "reset";
+    }
+    if ((op == "add" || source.find("+") != std::string::npos) && expr_mentions_signal(rhs, target)) return "increment";
+    if ((op == "sub" || source.find("-") != std::string::npos) && expr_mentions_signal(rhs, target)) return "decrement";
+    if (expr_mentions_signal(rhs, target) && signal_array_from_ast(rhs).size() == 1) return "hold";
+    return "update";
+}
+
+json normalize_assignments_with_conditions(const json& trace_data) {
+    json out = json::array();
+    json assignments = trace_data.value("assignments", json::array());
+    json controls = trace_data.value("control_dependencies", json::array());
+    for (auto assignment : assignments) {
+        json conditions = json::array();
+        for (const auto& dep : controls) conditions.push_back(condition_from_control_dep(dep));
+        assignment["active_conditions"] = conditions;
+        assignment["rhs_signals"] = assignment.value("rhs_signals", signal_array_from_ast(assignment.value("rhs", json::object())));
+        assignment["assignment_role"] = conditions.empty() ? "default_or_unconditional" : "branch_assignment";
+        out.push_back(assignment);
+    }
+    return out;
+}
+
+json run_procedural_assignment_action(const json& request) {
     json trace_req = request;
     trace_req["action"] = "trace.driver";
     json trace_resp = run_trace_action(trace_req, "driver");
     if (!trace_resp.value("ok", false)) return trace_resp;
-    json assignment = trace_resp["data"].value("assignment", json::object());
     json response = base_response(request, request.value("action", ""));
     response["session"] = trace_resp["session"];
-    response["summary"] = {
-        {"signal", request.value("args", json::object()).value("signal", "")},
-        {"kind", kind},
-        {"confidence", trace_resp["data"].value("confidence", "unknown")}
-    };
-    if (kind == "sequential_update") {
-        response["data"] = {{"sequential_update", {
-            {"target", request.value("args", json::object()).value("signal", "")},
-            {"clock", nullptr},
-            {"reset", nullptr},
-            {"rules", assignment.empty() ? json::array() : json::array({assignment})}
-        }}};
-    } else {
-        response["data"] = {{kind, {
-            {"target", request.value("args", json::object()).value("signal", "")},
-            {"assignments", assignment.empty() ? json::array() : json::array({assignment})},
-            {"confidence", trace_resp["data"].value("confidence", "unknown")}
-        }}};
+    std::string signal = request.value("args", json::object()).value("signal", "");
+    json trace_data = trace_resp.value("data", json::object());
+    json assignments = normalize_assignments_with_conditions(trace_data);
+    json defaults = json::array();
+    json branches = json::array();
+    for (const auto& a : assignments) {
+        if (a.value("assignment_role", "") == "default_or_unconditional") defaults.push_back(a);
+        else branches.push_back(a);
     }
+    response["summary"] = {
+        {"signal", signal},
+        {"assignment_count", assignments.size()},
+        {"branch_count", branches.size()},
+        {"default_count", defaults.size()},
+        {"confidence", trace_data.value("confidence", "unknown")}
+    };
+    response["data"] = {{"procedural_assignment", {
+        {"target", signal},
+        {"enclosing_block", assignments.empty() ? json{{"type", "unknown"}} : json{{"type", "procedural_or_continuous"}, {"location", assignments[0].value("location", json::object())}}},
+        {"assignments", assignments},
+        {"default_assignments", defaults},
+        {"branch_assignments", branches},
+        {"control_dependencies", trace_data.value("control_dependencies", json::array())},
+        {"dependency_edges", trace_data.value("dependency_edges", json::array())},
+        {"confidence", trace_data.value("confidence", "unknown")},
+        {"confidence_reason", trace_data.value("confidence_reason", "")}
+    }}};
+    return response;
+}
+
+json run_sequential_update_action(const json& request) {
+    json proc_resp = run_procedural_assignment_action(request);
+    if (!proc_resp.value("ok", false)) return proc_resp;
+    json response = base_response(request, request.value("action", ""));
+    response["session"] = proc_resp["session"];
+    std::string signal = request.value("args", json::object()).value("signal", "");
+    json proc = proc_resp["data"].value("procedural_assignment", json::object());
+    json assignments = proc.value("assignments", json::array());
+    json controls = proc.value("control_dependencies", json::array());
+    json timing = assignments.empty() ? json{{"clock", nullptr}, {"reset", nullptr}, {"event_controls", json::array()}} :
+                                      infer_clock_reset_from_assignment(assignments[0], controls);
+    json rules = json::array();
+    for (const auto& assignment : assignments) {
+        json conditions = assignment.value("active_conditions", json::array());
+        if (conditions.empty()) conditions.push_back({{"text", ""}, {"ast", json::object()}, {"signals", json::array()}});
+        for (const auto& condition : conditions) {
+            std::string rule_kind = classify_update_rule(assignment, condition, signal);
+            rules.push_back({
+                {"kind", rule_kind},
+                {"condition", condition},
+                {"next_value", assignment.value("rhs", json::object())},
+                {"next_value_text", assignment.value("rhs", json::object()).value("text", assignment.value("source", ""))},
+                {"rhs_signals", assignment.value("rhs_signals", json::array())},
+                {"source", assignment.value("source", "")},
+                {"location", assignment.value("location", json::object())}
+            });
+        }
+    }
+    response["summary"] = {
+        {"signal", signal},
+        {"rule_count", rules.size()},
+        {"clock", timing.value("clock", json(nullptr))},
+        {"reset", timing.value("reset", json(nullptr))},
+        {"confidence", proc.value("confidence", "unknown")}
+    };
+    response["data"] = {{"sequential_update", {
+        {"target", signal},
+        {"clock", timing.value("clock", json(nullptr))},
+        {"reset", timing.value("reset", json(nullptr))},
+        {"event_controls", timing.value("event_controls", json::array())},
+        {"rules", rules},
+        {"confidence", proc.value("confidence", "unknown")},
+        {"confidence_reason", proc.value("confidence_reason", "")}
+    }}};
+    return response;
+}
+
+json run_fsm_explain_action(const json& request) {
+    json seq_resp = run_sequential_update_action(request);
+    if (!seq_resp.value("ok", false)) return seq_resp;
+    json response = base_response(request, request.value("action", ""));
+    response["session"] = seq_resp["session"];
+    std::string signal = request.value("args", json::object()).value("signal", "");
+    json seq = seq_resp["data"].value("sequential_update", json::object());
+    json transitions = json::array();
+    for (const auto& rule : seq.value("rules", json::array())) {
+        std::string kind = rule.value("kind", "");
+        if (kind == "reset" || kind == "update") {
+            transitions.push_back({
+                {"from", "current"},
+                {"to", rule.value("next_value_text", "")},
+                {"condition", rule.value("condition", json::object())},
+                {"kind", kind == "reset" ? "reset_transition" : "transition"},
+                {"source", rule.value("source", "")},
+                {"location", rule.value("location", json::object())}
+            });
+        }
+    }
+    response["summary"] = {
+        {"signal", signal},
+        {"transition_count", transitions.size()},
+        {"confidence", seq.value("confidence", "unknown")}
+    };
+    response["data"] = {{"fsm", {
+        {"state_signal", signal},
+        {"clock", seq.value("clock", json(nullptr))},
+        {"reset", seq.value("reset", json(nullptr))},
+        {"transitions", transitions},
+        {"rules", seq.value("rules", json::array())},
+        {"confidence", seq.value("confidence", "unknown")},
+        {"confidence_reason", seq.value("confidence_reason", "")}
+    }}};
+    return response;
+}
+
+json run_counter_explain_action(const json& request) {
+    json seq_resp = run_sequential_update_action(request);
+    if (!seq_resp.value("ok", false)) return seq_resp;
+    json response = base_response(request, request.value("action", ""));
+    response["session"] = seq_resp["session"];
+    std::string signal = request.value("args", json::object()).value("signal", "");
+    json seq = seq_resp["data"].value("sequential_update", json::object());
+    json counter_rules = json::array();
+    for (const auto& rule : seq.value("rules", json::array())) {
+        std::string kind = rule.value("kind", "");
+        if (kind == "reset" || kind == "increment" || kind == "decrement" || kind == "hold" || kind == "update") {
+            counter_rules.push_back(rule);
+        }
+    }
+    bool is_counter_like = false;
+    for (const auto& rule : counter_rules) {
+        std::string kind = rule.value("kind", "");
+        if (kind == "increment" || kind == "decrement") is_counter_like = true;
+    }
+    std::string confidence = is_counter_like ? seq.value("confidence", "medium") : "medium";
+    response["summary"] = {
+        {"signal", signal},
+        {"counter_like", is_counter_like},
+        {"rule_count", counter_rules.size()},
+        {"confidence", confidence}
+    };
+    response["data"] = {{"counter", {
+        {"signal", signal},
+        {"clock", seq.value("clock", json(nullptr))},
+        {"reset", seq.value("reset", json(nullptr))},
+        {"rules", counter_rules},
+        {"counter_like", is_counter_like},
+        {"confidence", confidence},
+        {"confidence_reason", is_counter_like ? "increment/decrement rule was identified from next-value expression" : "sequential rules were found but no increment/decrement pattern was proven"}
+    }}};
     return response;
 }
 
@@ -834,12 +1247,12 @@ json actions_payload() {
         "signal.resolve", "signal.search", "signal.canonicalize",
         "trace.expand", "trace.graph", "trace.path", "trace.explain",
         "control.explain", "source.context",
-        "expr.normalize", "port.trace", "instance.map", "interface.resolve",
+        "expr.normalize", "procedural.assignment", "sequential.update",
+        "fsm.explain", "counter.explain",
+        "port.trace", "instance.map", "interface.resolve",
         "batch"
     });
-    json experimental = json::array({
-        "procedural.assignment", "sequential.update", "fsm.explain", "counter.explain"
-    });
+    json experimental = json::array();
     return {{"api_version", API_VERSION}, {"implemented", implemented}, {"experimental", experimental}};
 }
 
@@ -955,16 +1368,33 @@ json handle_request(const json& request) {
     if (action == "source.context") return source_context(request);
     if (action == "expr.normalize") {
         json response = base_response(request, action);
-        std::string expr = request.value("args", json::object()).value("expr", "");
-        if (expr.empty()) return error_response(request, action, "MISSING_FIELD", "args.expr is required");
-        response["summary"] = {{"expr", expr}};
-        response["data"] = {{"expr", parse_expr_ast(expr)}};
+        json args = request.value("args", json::object());
+        std::string signal = args.value("signal", "");
+        if (!signal.empty()) {
+            json trace_req = request;
+            trace_req["action"] = "trace.driver";
+            trace_req["args"]["signal"] = signal;
+            json trace_resp = run_trace_action(trace_req, "driver");
+            if (!trace_resp.value("ok", false)) return trace_resp;
+            json assignment = trace_resp["data"].value("assignment", json::object());
+            response["session"] = trace_resp["session"];
+            response["summary"] = {{"signal", signal}, {"source", "npi_trace_assignment"}, {"confidence", trace_resp["data"].value("confidence", "unknown")}};
+            response["data"] = {{"expr", assignment.value("rhs", json::object())},
+                                {"assignment", assignment},
+                                {"rhs_signals", assignment.value("rhs_signals", json::array())},
+                                {"confidence", trace_resp["data"].value("confidence", "unknown")}};
+            return response;
+        }
+        std::string expr = args.value("expr", "");
+        if (expr.empty()) return error_response(request, action, "MISSING_FIELD", "args.expr or args.signal is required");
+        response["summary"] = {{"expr", expr}, {"source", "string_fallback"}, {"confidence", "low"}};
+        response["data"] = {{"expr", parse_expr_ast(expr)}, {"confidence", "low"}, {"confidence_reason", "parsed from raw string without NPI handle"}};
         return response;
     }
-    if (action == "procedural.assignment") return procedural_or_seq_placeholder(request, "procedural_assignment");
-    if (action == "sequential.update") return procedural_or_seq_placeholder(request, "sequential_update");
-    if (action == "fsm.explain") return procedural_or_seq_placeholder(request, "fsm_explain");
-    if (action == "counter.explain") return procedural_or_seq_placeholder(request, "counter_explain");
+    if (action == "procedural.assignment") return run_procedural_assignment_action(request);
+    if (action == "sequential.update") return run_sequential_update_action(request);
+    if (action == "fsm.explain") return run_fsm_explain_action(request);
+    if (action == "counter.explain") return run_counter_explain_action(request);
     if (action == "port.trace" || action == "instance.map" || action == "interface.resolve") return run_port_like_action(request, action);
 
     return error_response(request, action, "UNKNOWN_ACTION", "unknown action: " + action, true);

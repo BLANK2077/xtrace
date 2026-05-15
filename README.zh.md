@@ -175,6 +175,16 @@ AI response 顶层固定包含 `ok/action/tool/session/summary/data/findings/sug
 
 AI trace 输出会在不改变旧 `driver/load/query -json` 的前提下，额外提供 `rhs_signals`、`dependency_edges`、`assignment`、`confidence`、`confidence_reason` 等面向因果推理的字段。
 
+更高层的因果 action 复用同一套 NPI trace evidence：
+
+- `expr.normalize` 在提供 `args.signal` 时返回真实 NPI assignment 的 RHS AST；只提供 `args.expr` 时作为低置信度字符串 fallback。
+- `procedural.assignment` 输出目标信号赋值集合、默认/无条件赋值、分支赋值、active condition 和源码 evidence。
+- `sequential.update` 输出 clock/reset 提示、event control，以及 reset/increment/decrement/hold/update 规则。
+- `fsm.explain` 基于 sequential update 规则归纳 state transition 候选。
+- `counter.explain` 识别 counter-like 的 reset/increment/decrement/hold 规则，并显式标记 confidence。
+
+当 NPI 无法提供完整表达式或块结构时，AI action 仍会返回 source/decompile evidence，并标记 `confidence=low` 或 `medium`；不会把 fallback evidence 伪装成 high confidence。
+
 ### 信号发现
 
 ```bash
