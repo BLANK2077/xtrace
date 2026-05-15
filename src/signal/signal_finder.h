@@ -14,7 +14,7 @@ struct SignalMatch {
     int line = 0;
 };
 
-struct SignalSearchResult {
+struct SignalResolveResult {
     bool ok = true;
     std::string status = "ok";
     std::string message;
@@ -25,28 +25,13 @@ struct SignalSearchResult {
 
 class SignalFinder {
 public:
-    SignalSearchResult resolve(const std::string& query, int limit = 20) const;
-    SignalSearchResult search(const std::string& pattern, int limit = 20) const;
+    SignalResolveResult resolve(const std::string& query) const;
 
-    std::string render_text(const SignalSearchResult& result) const;
-    std::string render_json(const SignalSearchResult& result) const;
+    std::string render_text(const SignalResolveResult& result) const;
+    std::string render_json(const SignalResolveResult& result) const;
 
 private:
-    void collect_scope(npiHandle scope,
-                       const std::string& pattern,
-                       int limit,
-                       SignalSearchResult& result) const;
-    void collect_objects(npiHandle scope,
-                         int object_type,
-                         const std::string& pattern,
-                         int limit,
-                         SignalSearchResult& result) const;
-    bool add_match(npiHandle hdl,
-                   const std::string& pattern,
-                   int limit,
-                   SignalSearchResult& result) const;
     SignalMatch make_match(npiHandle hdl) const;
-    bool matches_pattern(const std::string& signal, const std::string& pattern) const;
     std::string type_name(int type) const;
 };
 

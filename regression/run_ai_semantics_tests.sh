@@ -113,6 +113,12 @@ query '{"api_version":"xtrace.ai.v1","action":"port.trace","target":{"session_id
 query "{\"api_version\":\"xtrace.ai.v1\",\"action\":\"procedural.assignment\",\"target\":{\"dbdir\":\"$P3_DB\",\"auto_ensure\":true},\"args\":{\"signal\":\"p3_sem_top.u_mid.u_leaf.out\"},\"limits\":{\"max_results\":30}}" \
   | check_json 'd["ok"] and d["summary"]["assignment_count"] >= 1 and d["data"]["procedural_assignment"]["branch_assignments"]'
 
+query '{"api_version":"xtrace.ai.v1","action":"trace.explain","target":{"session_id":3},"args":{"signal":"p3_sem_top.u_mid.u_leaf.out","direction":"driver"},"limits":{"max_depth":1,"max_nodes":20,"max_edges":80}}' \
+  | check_json 'd["ok"] and d["summary"]["explanation_count"] >= 1 and d["summary"]["skipped_empty_dependency_count"] >= 0 and not any(x.get("related_signals") == [""] for x in d["data"]["explanations"]) and any(any(e.get("type") == "control_dependency" for e in x.get("evidence", [])) for x in d["data"]["explanations"])'
+
+query '{"api_version":"xtrace.ai.v1","action":"trace.explain","target":{"session_id":3},"args":{"signal":"p3_sem_top.u_mid.u_leaf.bus.ready","direction":"driver"},"limits":{"max_depth":1,"max_nodes":20,"max_edges":80}}' \
+  | check_json 'd["ok"] and any(x.get("confidence") == "high" for x in d["data"]["explanations"]) and not any(x.get("related_signals") == [""] for x in d["data"]["explanations"])'
+
 query '{"api_version":"xtrace.ai.v1","action":"sequential.update","target":{"session_id":3},"args":{"signal":"p3_sem_top.u_mid.u_leaf.count"},"limits":{"max_results":30}}' \
   | check_json 'd["ok"] and d["summary"]["rule_count"] >= 1 and any(r["kind"] in ("reset","increment","decrement","hold") for r in d["data"]["sequential_update"]["rules"])'
 
@@ -122,7 +128,7 @@ query '{"api_version":"xtrace.ai.v1","action":"fsm.explain","target":{"session_i
 query '{"api_version":"xtrace.ai.v1","action":"counter.explain","target":{"session_id":3},"args":{"signal":"p3_sem_top.u_mid.u_leaf.count"},"limits":{"max_results":30}}' \
   | check_json 'd["ok"] and d["summary"]["counter_like"] is True and any(r["kind"] == "increment" for r in d["data"]["counter"]["rules"])'
 
-query '{"api_version":"xtrace.ai.v1","action":"batch","args":{"mode":"continue_on_error","requests":[{"api_version":"xtrace.ai.v1","action":"trace.driver","target":{"session_id":1},"args":{"signal":"uart_16550.TXD"}},{"api_version":"xtrace.ai.v1","action":"signal.search","target":{"session_id":1},"args":{"query":"RXD"},"limits":{"max_results":5}}]}}' \
+query '{"api_version":"xtrace.ai.v1","action":"batch","args":{"mode":"continue_on_error","requests":[{"api_version":"xtrace.ai.v1","action":"trace.driver","target":{"session_id":1},"args":{"signal":"uart_16550.TXD"}},{"api_version":"xtrace.ai.v1","action":"signal.resolve","target":{"session_id":1},"args":{"signal":"uart_16550.RXDin"}}]}}' \
   | check_json 'd["ok"] and d["summary"]["count"] == 2'
 
 HOME="$TMP_HOME" "$ROOT_DIR/tools/xtrace-env" driver uart_16550.RXDin -s 1 -json \

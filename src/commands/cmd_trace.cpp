@@ -170,29 +170,25 @@ int cmd_load(int argc, char** argv) {
 
 int cmd_signal(int argc, char** argv) {
     if (argc < 4) {
-        fprintf(stderr, "Usage: %s signal <resolve|search> <pattern> -s <session_id> [-json] [--limit N]\n", argv[0]);
+        fprintf(stderr, "Usage: %s signal resolve <signal> -s <session_id> [-json]\n", argv[0]);
         return 1;
     }
 
     bool resolve = strcmp(argv[2], "resolve") == 0;
-    bool search = strcmp(argv[2], "search") == 0;
-    if (!resolve && !search) {
-        fprintf(stderr, "Usage: %s signal <resolve|search> <pattern> -s <session_id> [-json] [--limit N]\n", argv[0]);
+    if (!resolve) {
+        fprintf(stderr, "Usage: %s signal resolve <signal> -s <session_id> [-json]\n", argv[0]);
         return 1;
     }
 
     std::string pattern = argv[3];
     int session_id = -1;
     bool json_output = has_json_arg(argc, argv);
-    int limit = 20;
 
     for (int i = 4; i < argc; ++i) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
             session_id = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-json") == 0) {
             continue;
-        } else if (strcmp(argv[i], "--limit") == 0 && i + 1 < argc) {
-            limit = atoi(argv[++i]);
         } else {
             if (json_output) {
                 print_command_json_error("signal", session_id, "invalid_args", std::string("Unknown option: ") + argv[i]);
@@ -207,18 +203,13 @@ int cmd_signal(int argc, char** argv) {
         if (json_output) {
             print_command_json_error("signal", session_id, "invalid_args", "signal requires -s <session_id>");
         } else {
-            fprintf(stderr, "Usage: %s signal <resolve|search> <pattern> -s <session_id> [-json] [--limit N]\n", argv[0]);
+            fprintf(stderr, "Usage: %s signal resolve <signal> -s <session_id> [-json]\n", argv[0]);
         }
         return 1;
     }
 
-    std::string cmd = (resolve
-        ? (json_output ? CMD_SIGNAL_RESOLVE : CMD_SIGNAL_RESOLVE_TEXT)
-        : (json_output ? CMD_SIGNAL_SEARCH : CMD_SIGNAL_SEARCH_TEXT));
+    std::string cmd = json_output ? CMD_SIGNAL_RESOLVE : CMD_SIGNAL_RESOLVE_TEXT;
     cmd += " " + pattern;
-    if (limit > 0) {
-        cmd += " --limit " + std::to_string(limit);
-    }
 
     std::string payload;
     std::string status;

@@ -100,15 +100,15 @@ JSON 示例：
 
 ## 信号发现
 
-当不确定完整层级路径时，先用 `signal search` 或 `signal resolve`：
+当不确定完整层级路径时，先用外部 `rg`/grep 在 RTL 源码中查候选，再用 `signal resolve` 验证完整路径：
 
 ```bash
 tools/xtrace-env signal resolve top.u_dut.signal -s 1 -json
-tools/xtrace-env signal search signal -s 1 -json --limit 20
+rg -n "signal" /path/to/rtl
 ```
 
-- `resolve` 优先按完整名解析，失败后返回候选匹配。
-- `search` 按短名或名称片段搜索候选信号。
+- `resolve` 按完整名解析。
+- xtrace 不在 daidir 文本中实现 search；短名或片段搜索交给源码 grep。
 - JSON 输出包含 `ok/query/matches/count/truncated`。
 - 找不到信号时返回非 0，`status` 为 `not_found`。
 

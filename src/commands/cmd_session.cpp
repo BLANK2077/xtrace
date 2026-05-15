@@ -44,7 +44,7 @@ void print_help(const char* prog) {
     printf("  %s session doctor -s <sid> [-json]  Diagnose a session\n", prog);
     printf("  %s driver <sig> [-s <sid>] [-json]  Trace signal drivers\n", prog);
     printf("  %s load   <sig> [-s <sid>] [-json]  Trace signal loads\n", prog);
-    printf("  %s signal <resolve|search> <pattern> -s <sid> [-json] [--limit N]\n", prog);
+    printf("  %s signal resolve <signal> -s <sid> [-json]\n", prog);
     printf("  %s query -dbdir <simv.daidir> <--driver|--load> <sig> [-json] [filters]\n", prog);
     printf("  %s ai <query|schema|actions> ...  AI JSON interface\n", prog);
     printf("  %s close               Close the latest session\n", prog);

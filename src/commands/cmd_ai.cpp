@@ -418,7 +418,8 @@ json enrich_trace_payload(const json& request, const json& trace) {
             {"file", r.value("file", "")},
             {"line", r.value("line", 0)},
             {"source", r.value("source", "")},
-            {"resolution", resolution}
+            {"resolution", resolution},
+            {"confidence", edge_type == "statement_only" ? "low" : "high"}
         };
         edges.push_back(edge);
     }
@@ -433,7 +434,8 @@ json enrich_trace_payload(const json& request, const json& trace) {
             {"file", r.value("file", "")},
             {"line", r.value("line", 0)},
             {"source", r.value("source", "")},
-            {"resolution", r.value("resolution", "")}
+            {"resolution", r.value("resolution", "")},
+            {"confidence", "medium"}
         });
     }
 
@@ -506,17 +508,17 @@ json run_trace_action(const json& request, const std::string& mode) {
             {"recoverable", true},
             {"candidates", json::array()},
             {"suggested_actions", json::array({{
-                {"tool", "xtrace"},
-                {"action", "signal.search"},
-                {"reason", "exact signal was not found"},
-                {"args", {{"query", signal}}}
+                {"tool", "shell"},
+                {"action", "rg"},
+                {"reason", "xtrace requires an exact signal path; use source grep to discover candidate names"},
+                {"args", {{"query", leaf_name(signal)}}}
             }})}
         };
     }
     return response;
 }
 
-json run_signal_action(const json& request, bool resolve) {
+json run_signal_resolve_action(const json& request) {
     json response = base_response(request, request.value("action", ""));
     int session_id = -1;
     SessionInfo session;
@@ -526,9 +528,7 @@ json run_signal_action(const json& request, bool resolve) {
     std::string query = args.value("signal", args.value("query", ""));
     if (query.empty()) return error_response(request, request.value("action", ""), "MISSING_FIELD", "args.signal or args.query is required");
 
-    int limit = request.value("limits", json::object()).value("max_results", args.value("limit", 20));
-    std::string cmd = std::string(resolve ? CMD_SIGNAL_RESOLVE : CMD_SIGNAL_SEARCH) + " " + query;
-    if (limit > 0) cmd += " --limit " + std::to_string(limit);
+    std::string cmd = std::string(CMD_SIGNAL_RESOLVE) + " " + query;
 
     json payload;
     std::string status, message;
@@ -549,14 +549,19 @@ json run_signal_action(const json& request, bool resolve) {
             {"message", payload.value("message", "signal not found")},
             {"recoverable", true},
             {"candidates", payload.value("matches", json::array())},
-            {"suggested_actions", json::array()}
+            {"suggested_actions", json::array({{
+                {"tool", "shell"},
+                {"action", "rg"},
+                {"reason", "xtrace signal.resolve only accepts exact paths; use source grep to discover candidate names"},
+                {"args", {{"query", leaf_name(query)}}}
+            }})}
         };
     }
     return response;
 }
 
 json canonicalize_signal(const json& request) {
-    json resolved = run_signal_action(request, true);
+    json resolved = run_signal_resolve_action(request);
     if (!resolved.value("ok", false)) return resolved;
     json data = resolved.value("data", json::object());
     std::string query = data.value("query", request.value("args", json::object()).value("signal", ""));
@@ -614,6 +619,58 @@ json graph_from_trace(const json& trace, const std::string& root) {
         graph_edges.push_back(e);
     }
     return {{"nodes", nodes}, {"edges", graph_edges}};
+}
+
+std::string confidence_for_edge(const json& edge) {
+    std::string confidence = edge.value("confidence", "");
+    if (!confidence.empty()) return confidence;
+    std::string type = edge.value("type", "");
+    std::string resolution = edge.value("resolution", "");
+    if (type == "statement_only" || resolution == "statement_only") return "low";
+    if (type == "control_dependency") return "medium";
+    if (!edge.value("source", "").empty()) return "high";
+    return "medium";
+}
+
+json explanation_from_edge(const json& edge,
+                           const std::string& root,
+                           const std::string& direction,
+                           int& skipped_empty_dependency_count) {
+    std::string from = edge.value("from", "");
+    std::string to = edge.value("to", "");
+    std::string type = edge.value("type", "dependency");
+    std::string related = direction == "load" ? to : from;
+    json related_signals = json::array();
+    if (!related.empty()) related_signals.push_back(related);
+
+    if (related.empty() && type != "statement_only") {
+        skipped_empty_dependency_count++;
+        return nullptr;
+    }
+
+    std::string claim;
+    if (type == "control_dependency") {
+        claim = root + " is controlled by " + related;
+    } else if (type == "statement_only") {
+        claim = root + " has assignment evidence without resolved dependencies";
+    } else if (direction == "load") {
+        claim = root + " can affect " + related;
+    } else {
+        claim = root + " depends on " + related;
+    }
+
+    return {
+        {"claim", claim},
+        {"evidence", json::array({{
+            {"type", type},
+            {"file", edge.value("file", "")},
+            {"line", edge.value("line", 0)},
+            {"source", edge.value("source", "")},
+            {"resolution", edge.value("resolution", "")}
+        }})},
+        {"related_signals", related_signals},
+        {"confidence", confidence_for_edge(edge)}
+    };
 }
 
 bool edge_type_allowed(const json& args, const json& edge) {
@@ -723,20 +780,13 @@ json trace_expand_like(const json& request, bool explain_only = false) {
     response["meta"]["truncated"] = truncated;
     if (explain_only) {
         json explanations = json::array();
+        int skipped_empty_dependency_count = 0;
         for (const auto& e : trace.value("dependency_edges", json::array())) {
-            explanations.push_back({
-                {"claim", root + " depends on " + e.value("from", "")},
-                {"evidence", json::array({{
-                    {"type", e.value("type", "dependency")},
-                    {"file", e.value("file", "")},
-                    {"line", e.value("line", 0)},
-                    {"source", e.value("source", "")}
-                }})},
-                {"related_signals", json::array({e.value("from", "")})},
-                {"confidence", trace.value("confidence", "unknown")}
-            });
+            json explanation = explanation_from_edge(e, root, direction, skipped_empty_dependency_count);
+            if (!explanation.is_null()) explanations.push_back(explanation);
         }
         response["summary"]["explanation_count"] = explanations.size();
+        response["summary"]["skipped_empty_dependency_count"] = skipped_empty_dependency_count;
         response["data"] = {{"explanations", explanations}, {"trace", trace}, {"traces", traces}};
         response["suggested_next_actions"] = json::array({{
             {"tool", "xwave"},
@@ -1244,7 +1294,7 @@ json actions_payload() {
     json implemented = json::array({
         "session.open", "session.ensure", "session.list", "session.doctor", "session.kill", "session.close",
         "trace.driver", "trace.load", "trace.query",
-        "signal.resolve", "signal.search", "signal.canonicalize",
+        "signal.resolve", "signal.canonicalize",
         "trace.expand", "trace.graph", "trace.path", "trace.explain",
         "control.explain", "source.context",
         "expr.normalize", "procedural.assignment", "sequential.update",
@@ -1358,8 +1408,7 @@ json handle_request(const json& request) {
         std::string mode = request.value("args", json::object()).value("mode", "driver");
         return run_trace_action(request, mode == "load" ? "load" : "driver");
     }
-    if (action == "signal.resolve") return run_signal_action(request, true);
-    if (action == "signal.search") return run_signal_action(request, false);
+    if (action == "signal.resolve") return run_signal_resolve_action(request);
     if (action == "signal.canonicalize") return canonicalize_signal(request);
     if (action == "trace.expand" || action == "trace.graph") return trace_expand_like(request, false);
     if (action == "trace.path") return trace_path(request);

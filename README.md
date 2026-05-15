@@ -171,7 +171,7 @@ Implemented AI actions include:
 
 - `session.open`, `session.ensure`, `session.list`, `session.doctor`, `session.kill`, `session.close`
 - `trace.driver`, `trace.load`, `trace.query`
-- `signal.resolve`, `signal.search`, `signal.canonicalize`
+- `signal.resolve`, `signal.canonicalize`
 - `trace.expand`, `trace.graph`, `trace.path`, `trace.explain`, `control.explain`, `source.context`
 - `expr.normalize`, `procedural.assignment`, `sequential.update`, `fsm.explain`, `counter.explain`, `port.trace`, `instance.map`, `interface.resolve`
 - `batch`
@@ -194,11 +194,11 @@ When NPI cannot expose a complete expression or block structure, the AI action s
 # Resolve a full signal name.
 tools/xtrace-env signal resolve test_top.uut.bus.ready -s 1 -json
 
-# Search candidate signals by leaf name or substring.
-tools/xtrace-env signal search ready -s 1 -json --limit 20
+# Use source grep to discover candidates, then resolve the exact path.
+rg -n "ready" /path/to/rtl
 ```
 
-JSON output includes `ok/query/matches/count/truncated`. Missing signals return non-zero with `status=not_found`.
+`signal.resolve` requires an exact RTL path. Missing signals return non-zero with `status=not_found`; use `rg` on source files to discover candidate names instead of asking xtrace to search inside daidir text.
 
 ### Session Doctor Exit Codes
 

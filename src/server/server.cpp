@@ -111,18 +111,17 @@ static void handle_trace(int client_fd, const char* request, TraceMode mode, boo
     send_all(client_fd, END_MARKER, strlen(END_MARKER));
 }
 
-static void handle_signal(int client_fd, const char* request, bool resolve, bool json_output) {
+static void handle_signal_resolve(int client_fd, const char* request, bool json_output) {
     std::vector<std::string> tokens = split_tokens(request);
     if (tokens.empty()) {
-        const char* err = ERROR_PREFIX "Missing signal pattern\n";
+        const char* err = ERROR_PREFIX "Missing signal\n";
         send_all(client_fd, err, strlen(err));
         send_all(client_fd, END_MARKER, strlen(END_MARKER));
         return;
     }
 
-    int limit = parse_limit_option(tokens, 1, 20);
     SignalFinder finder;
-    SignalSearchResult result = resolve ? finder.resolve(tokens[0], limit) : finder.search(tokens[0], limit);
+    SignalResolveResult result = finder.resolve(tokens[0]);
     std::string payload = json_output ? finder.render_json(result) : finder.render_text(result);
     send_all(client_fd, payload.c_str(), payload.size());
     send_all(client_fd, END_MARKER, strlen(END_MARKER));
@@ -229,15 +228,7 @@ static bool handle_client(int client_fd, bool& should_quit) {
         const char* rest = cmd + strlen(CMD_SIGNAL_RESOLVE_TEXT);
         while (*rest == ' ') rest++;
 
-        handle_signal(client_fd, rest, true, false);
-        return true;
-    }
-
-    if (strncmp(cmd, CMD_SIGNAL_SEARCH_TEXT, strlen(CMD_SIGNAL_SEARCH_TEXT)) == 0) {
-        const char* rest = cmd + strlen(CMD_SIGNAL_SEARCH_TEXT);
-        while (*rest == ' ') rest++;
-
-        handle_signal(client_fd, rest, false, false);
+        handle_signal_resolve(client_fd, rest, false);
         return true;
     }
 
@@ -245,15 +236,7 @@ static bool handle_client(int client_fd, bool& should_quit) {
         const char* rest = cmd + strlen(CMD_SIGNAL_RESOLVE);
         while (*rest == ' ') rest++;
 
-        handle_signal(client_fd, rest, true, true);
-        return true;
-    }
-
-    if (strncmp(cmd, CMD_SIGNAL_SEARCH, strlen(CMD_SIGNAL_SEARCH)) == 0) {
-        const char* rest = cmd + strlen(CMD_SIGNAL_SEARCH);
-        while (*rest == ' ') rest++;
-
-        handle_signal(client_fd, rest, false, true);
+        handle_signal_resolve(client_fd, rest, true);
         return true;
     }
 

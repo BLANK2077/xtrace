@@ -82,7 +82,7 @@ AI usage rules:
 - Prefer `python3 -c 'import json,sys; ...'` pipelines for extracting fields or computing statistics from `xtrace ai query` output.
 - Treat `confidence:"low"` or `confidence:"medium"` as RTL evidence that needs human review or xwave verification before calling a hypothesis proven.
 - Prefer `trace.driver`, `trace.load`, or `trace.query` for direct evidence; use graph/path/explain actions after you have a concrete root signal.
-- Use `signal.search` or `signal.canonicalize` after `SIGNAL_NOT_FOUND` or ambiguous short names.
+- Use external `rg`/grep on RTL source to discover candidate names; xtrace only resolves exact paths.
 - Use `limits.max_results/max_depth/max_paths` for graph and broad trace actions.
 - Use `batch` for multi-step debug plans to reduce repeated session setup.
 
@@ -170,14 +170,6 @@ Resolve an exact or near-exact signal path.
 
 ```json
 {"api_version":"xtrace.ai.v1","action":"signal.resolve","target":{"session_id":1},"args":{"signal":"top.u_dut.ready"}}
-```
-
-### `signal.search`
-
-Search by leaf name or substring when a full hierarchy is unknown.
-
-```json
-{"api_version":"xtrace.ai.v1","action":"signal.search","target":{"session_id":1},"args":{"query":"ready","match":"substring"},"limits":{"max_results":50}}
 ```
 
 ### `signal.canonicalize`

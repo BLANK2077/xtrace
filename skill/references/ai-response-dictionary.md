@@ -59,7 +59,7 @@ Typical fields:
 ```
 
 AI usage:
-- On `SIGNAL_NOT_FOUND`, run `signal.search` or `signal.canonicalize`.
+- On `SIGNAL_NOT_FOUND`, use external `rg`/grep on RTL source to discover candidates, then retry `signal.resolve` or `signal.canonicalize` with an exact path.
 - On `SESSION_UNHEALTHY`, run `session.doctor` or `session.ensure`.
 - On parser or request errors, fix the request before retrying.
 
@@ -163,7 +163,7 @@ tools/xtrace-env ai query --json '{"api_version":"xtrace.ai.v1","action":"trace.
 Actions:
 
 ```text
-signal.resolve/signal.search/signal.canonicalize
+signal.resolve/signal.canonicalize
 ```
 
 Common payloads:
