@@ -20,10 +20,15 @@
 #define CMD_LOAD            "LOAD"
 #define CMD_DRIVER_JSON     "DRIVER_JSON"
 #define CMD_LOAD_JSON       "LOAD_JSON"
+#define CMD_DRIVER_AI       "DRIVER_AI"
+#define CMD_LOAD_AI         "LOAD_AI"
 #define CMD_SIGNAL_RESOLVE  "SIGNAL_RESOLVE"
 #define CMD_SIGNAL_SEARCH   "SIGNAL_SEARCH"
 #define CMD_SIGNAL_RESOLVE_TEXT "SIGNAL_RESOLVE_TEXT"
 #define CMD_SIGNAL_SEARCH_TEXT  "SIGNAL_SEARCH_TEXT"
+#define CMD_PORT_TRACE_AI       "PORT_TRACE_AI"
+#define CMD_INSTANCE_MAP_AI     "INSTANCE_MAP_AI"
+#define CMD_INTERFACE_RESOLVE_AI "INTERFACE_RESOLVE_AI"
 
 // End-of-response marker (server -> client)
 #define END_MARKER          "##END##\n"

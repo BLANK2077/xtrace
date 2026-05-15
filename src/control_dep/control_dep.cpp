@@ -12,26 +12,25 @@ ControlDepTracer::~ControlDepTracer() {}
 const char* ControlDepTracer::get_type_str(int type) {
     // Map common NPI types to strings for debugging
     switch (type) {
-        case 1: return "npiAlways";
-        case 2: return "npiInitial";
-        case 32: return "npiModule";
-        case 99: return "npiProcess";
+        case npiAlways: return "npiAlways";
+        case npiInitial: return "npiInitial";
+        case npiModule: return "npiModule";
+        case npiProcess: return "npiProcess";
         case npiIf: return "npiIf";
         case npiIfElse: return "npiIfElse";
         case npiAssignment: return "npiAssignment";
-        case 500: return "npiNamedBegin";
-        case 501: return "npiBegin";
+        case npiNamedBegin: return "npiNamedBegin";
+        case npiBegin: return "npiBegin";
         case npiWhile: return "npiWhile";
         case npiDoWhile: return "npiDoWhile";
         case npiWait: return "npiWait";
         case npiCase: return "npiCase";
-        case 608: return "npiOperation";
+        case npiOperation: return "npiOperation";
         case npiNet: return "npiNet";
-        case 206: return "npiReg";
-        case 200: return "npiBitVar";
-        case 605: return "npiPartSelect";
-        case 100: return "npiModule";
-        case 212: return "npiPort";
+        case npiReg: return "npiReg";
+        case npiBitVar: return "npiBitVar";
+        case npiPartSelect: return "npiPartSelect";
+        case npiPort: return "npiPort";
         default: {
             static char buf[32];
             snprintf(buf, sizeof(buf), "type_%d", type);
@@ -215,7 +214,7 @@ void ControlDepTracer::analyze_stmt(npiHandle stmt, const char* target_signal,
             break;
         }
 
-        case 13 /* npiEventControl */: {
+        case npiEventControl: {
             npiHandle body_stmt = npi_handle(npiStmt, stmt);
             if (body_stmt) {
                 analyze_stmt(body_stmt, target_signal, current_condition, results);
@@ -274,13 +273,13 @@ void ControlDepTracer::analyze_scope(npiHandle scope, const char* target_signal,
     int scope_type = npi_get(npiType, scope);
 
     // For always/initial blocks, try to get their statement directly
-    if (scope_type == 1 /* npiAlways */ || scope_type == 2 /* npiInitial */) {
+    if (scope_type == npiAlways || scope_type == npiInitial) {
         npiHandle stmt = npi_handle(npiStmt, scope);
         if (stmt) {
             int stmt_type = npi_get(npiType, stmt);
 
             // Event control (@(posedge clk...)) contains the actual body via npiStmt
-            if (stmt_type == 13 /* npiEventControl */) {
+            if (stmt_type == npiEventControl) {
                 npiHandle body_stmt = npi_handle(npiStmt, stmt);
                 if (body_stmt) {
                     analyze_stmt(body_stmt, target_signal, current_condition, results);
@@ -296,7 +295,7 @@ void ControlDepTracer::analyze_scope(npiHandle scope, const char* target_signal,
     }
 
     // For named begin-end blocks, iterate internal scope
-    if (scope_type == 500 /* npiNamedBegin */) {
+    if (scope_type == npiNamedBegin) {
         npiHandle internal_scope = npi_handle(npiInternalScope, scope);
         if (internal_scope) {
             analyze_scope(internal_scope, target_signal, current_condition, results);
@@ -579,7 +578,7 @@ void ControlDepTracer::analyze_stmt_with_info(npiHandle stmt, const char* target
             break;
         }
 
-        case 13 /* npiEventControl */: {
+        case npiEventControl: {
             npiHandle body_stmt = npi_handle(npiStmt, stmt);
             if (body_stmt) {
                 analyze_stmt_with_info(body_stmt, target_signal, current_condition, control_stmt, results);
@@ -628,11 +627,11 @@ void ControlDepTracer::analyze_scope_with_info(npiHandle scope, const char* targ
 
     int scope_type = npi_get(npiType, scope);
 
-    if (scope_type == 1 /* npiAlways */ || scope_type == 2 /* npiInitial */) {
+    if (scope_type == npiAlways || scope_type == npiInitial) {
         npiHandle stmt = npi_handle(npiStmt, scope);
         if (stmt) {
             int stmt_type = npi_get(npiType, stmt);
-            if (stmt_type == 13 /* npiEventControl */) {
+            if (stmt_type == npiEventControl) {
                 npiHandle body_stmt = npi_handle(npiStmt, stmt);
                 if (body_stmt) {
                     analyze_stmt_with_info(body_stmt, target_signal, current_condition, control_stmt, results);
@@ -647,7 +646,7 @@ void ControlDepTracer::analyze_scope_with_info(npiHandle scope, const char* targ
         return;
     }
 
-    if (scope_type == 500 /* npiNamedBegin */) {
+    if (scope_type == npiNamedBegin) {
         npiHandle internal_scope = npi_handle(npiInternalScope, scope);
         if (internal_scope) {
             analyze_scope_with_info(internal_scope, target_signal, current_condition, control_stmt, results);

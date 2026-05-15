@@ -410,7 +410,7 @@ json run_trace_action(const json& request, const std::string& mode) {
         return error_response(request, request.value("action", ""), "MISSING_FIELD", "args.signal is required");
     }
 
-    std::string cmd = (mode == "load" ? CMD_LOAD_JSON : CMD_DRIVER_JSON);
+    std::string cmd = (mode == "load" ? CMD_LOAD_AI : CMD_DRIVER_AI);
     cmd += " " + signal + option_string_from_limits_args(request);
 
     json trace;
@@ -419,7 +419,7 @@ json run_trace_action(const json& request, const std::string& mode) {
         return error_response(request, request.value("action", ""), "SESSION_UNHEALTHY", message.empty() ? status : message);
     }
 
-    json enriched = enrich_trace_payload(request, trace);
+    json enriched = trace.contains("dependency_edges") ? trace : enrich_trace_payload(request, trace);
     response["ok"] = enriched.value("ok", true);
     response["summary"] = make_trace_summary(enriched);
     response["data"] = enriched;
@@ -702,6 +702,20 @@ json control_explain(const json& request) {
     json trace_resp = run_trace_action(trace_req, "driver");
     if (!trace_resp.value("ok", false)) return trace_resp;
     json deps = trace_resp["data"].value("control_dependencies", json::array());
+    for (auto& dep : deps) {
+        std::string source = dep.value("source", "");
+        std::string cond = source;
+        size_t if_pos = cond.find("if");
+        size_t lparen = cond.find('(', if_pos == std::string::npos ? 0 : if_pos);
+        size_t rparen = cond.rfind(')');
+        if (lparen != std::string::npos && rparen != std::string::npos && rparen > lparen) {
+            cond = cond.substr(lparen + 1, rparen - lparen - 1);
+        }
+        dep["condition_text"] = trim(cond);
+        dep["condition"] = parse_expr_ast(cond);
+        dep["condition_signals"] = json::array({dep.value("signal", "")});
+        dep["confidence"] = dep.value("source", "").empty() ? "low" : "medium";
+    }
     trace_resp["action"] = request.value("action", "control.explain");
     trace_resp["summary"] = {
         {"signal", request.value("args", json::object()).value("signal", "")},
@@ -741,6 +755,50 @@ json procedural_or_seq_placeholder(const json& request, const std::string& kind)
     return response;
 }
 
+json run_port_like_action(const json& request, const std::string& action) {
+    json response = base_response(request, action);
+    int session_id = -1;
+    SessionInfo session;
+    if (!ensure_target_session(request, response, session_id, session)) return response;
+
+    json args = request.value("args", json::object());
+    std::string path = args.value("path", args.value("instance", args.value("signal", args.value("interface", ""))));
+    if (path.empty()) {
+        return error_response(request, action, "MISSING_FIELD", "args.path, args.instance, args.signal, or args.interface is required");
+    }
+    int limit = request.value("limits", json::object()).value("max_results", args.value("limit", 0));
+    std::string cmd = action == "port.trace" ? CMD_PORT_TRACE_AI :
+                      action == "instance.map" ? CMD_INSTANCE_MAP_AI : CMD_INTERFACE_RESOLVE_AI;
+    cmd += " " + path;
+    if (limit > 0) cmd += " --limit " + std::to_string(limit);
+
+    json payload;
+    std::string status, message;
+    if (!send_json_command(session_id, cmd, payload, status, message)) {
+        return error_response(request, action, "SESSION_UNHEALTHY", message.empty() ? status : message);
+    }
+    response["ok"] = payload.value("ok", true);
+    response["summary"] = {
+        {"query", payload.value("query", path)},
+        {"port_count", payload.value("port_count", 0)},
+        {"modport_port_count", payload.value("modport_port_count", 0)},
+        {"truncated", payload.value("truncated", false)}
+    };
+    response["data"] = payload;
+    response["meta"]["truncated"] = payload.value("truncated", false);
+    if (!response["ok"].get<bool>()) {
+        json err = payload.value("error", json::object());
+        response["error"] = {
+            {"code", err.value("code", "TRACE_NO_RESULT")},
+            {"message", err.value("message", "port/interface query failed")},
+            {"recoverable", true},
+            {"candidates", json::array()},
+            {"suggested_actions", json::array()}
+        };
+    }
+    return response;
+}
+
 json schema_payload() {
     return {
         {"api_version", API_VERSION},
@@ -776,11 +834,13 @@ json actions_payload() {
         "signal.resolve", "signal.search", "signal.canonicalize",
         "trace.expand", "trace.graph", "trace.path", "trace.explain",
         "control.explain", "source.context",
-        "expr.normalize", "procedural.assignment", "sequential.update",
-        "fsm.explain", "counter.explain", "port.trace", "instance.map", "interface.resolve",
+        "expr.normalize", "port.trace", "instance.map", "interface.resolve",
         "batch"
     });
-    return {{"api_version", API_VERSION}, {"implemented", implemented}};
+    json experimental = json::array({
+        "procedural.assignment", "sequential.update", "fsm.explain", "counter.explain"
+    });
+    return {{"api_version", API_VERSION}, {"implemented", implemented}, {"experimental", experimental}};
 }
 
 json handle_request(const json& request);
@@ -905,7 +965,7 @@ json handle_request(const json& request) {
     if (action == "sequential.update") return procedural_or_seq_placeholder(request, "sequential_update");
     if (action == "fsm.explain") return procedural_or_seq_placeholder(request, "fsm_explain");
     if (action == "counter.explain") return procedural_or_seq_placeholder(request, "counter_explain");
-    if (action == "port.trace" || action == "instance.map" || action == "interface.resolve") return trace_expand_like(request, false);
+    if (action == "port.trace" || action == "instance.map" || action == "interface.resolve") return run_port_like_action(request, action);
 
     return error_response(request, action, "UNKNOWN_ACTION", "unknown action: " + action, true);
 }

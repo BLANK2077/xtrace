@@ -22,6 +22,8 @@ SRCS        = src/main.cpp \
               src/commands/cmd_trace.cpp \
               src/commands/cmd_ai.cpp \
               src/server/server.cpp \
+              src/ast/ast_extractor.cpp \
+              src/port/port_analyzer.cpp \
               src/control_dep/control_dep.cpp \
               src/trace/trace_engine.cpp \
               src/signal/signal_finder.cpp

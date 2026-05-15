@@ -2,6 +2,7 @@
 #include "../protocol/protocol.h"
 #include "../trace/trace_engine.h"
 #include "../signal/signal_finder.h"
+#include "../port/port_analyzer.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -91,7 +92,7 @@ static int parse_limit_option(const std::vector<std::string>& tokens, size_t sta
     return limit;
 }
 
-static void handle_trace(int client_fd, const char* request, TraceMode mode, bool json_output) {
+static void handle_trace(int client_fd, const char* request, TraceMode mode, bool json_output, bool ai_output = false) {
     std::vector<std::string> tokens = split_tokens(request);
     if (tokens.empty()) {
         const char* err = ERROR_PREFIX "Missing signal\n";
@@ -104,7 +105,8 @@ static void handle_trace(int client_fd, const char* request, TraceMode mode, boo
     TraceOptions options = parse_trace_options(tokens, 1);
     TraceEngine engine;
     TraceResult result = engine.trace(signal, mode, options);
-    std::string payload = json_output ? engine.render_json(result) : engine.render_text(result);
+    std::string payload = ai_output ? engine.render_ai_json(result) :
+                          json_output ? engine.render_json(result) : engine.render_text(result);
     send_all(client_fd, payload.c_str(), payload.size());
     send_all(client_fd, END_MARKER, strlen(END_MARKER));
 }
@@ -122,6 +124,28 @@ static void handle_signal(int client_fd, const char* request, bool resolve, bool
     SignalFinder finder;
     SignalSearchResult result = resolve ? finder.resolve(tokens[0], limit) : finder.search(tokens[0], limit);
     std::string payload = json_output ? finder.render_json(result) : finder.render_text(result);
+    send_all(client_fd, payload.c_str(), payload.size());
+    send_all(client_fd, END_MARKER, strlen(END_MARKER));
+}
+
+static void handle_port_command(int client_fd, const char* request, const std::string& action) {
+    std::vector<std::string> tokens = split_tokens(request);
+    if (tokens.empty()) {
+        const char* err = ERROR_PREFIX "Missing path\n";
+        send_all(client_fd, err, strlen(err));
+        send_all(client_fd, END_MARKER, strlen(END_MARKER));
+        return;
+    }
+    int limit = parse_limit_option(tokens, 1, 0);
+    PortAnalyzer analyzer;
+    std::string payload;
+    if (action == "port.trace") {
+        payload = analyzer.render_port_trace(tokens[0], limit);
+    } else if (action == "instance.map") {
+        payload = analyzer.render_instance_map(tokens[0]);
+    } else {
+        payload = analyzer.render_interface_resolve(tokens[0]);
+    }
     send_all(client_fd, payload.c_str(), payload.size());
     send_all(client_fd, END_MARKER, strlen(END_MARKER));
 }
@@ -166,6 +190,22 @@ static bool handle_client(int client_fd, bool& should_quit) {
     if (strcmp(cmd, CMD_VERSION) == 0) {
         const char* version = PROTOCOL_VERSION "\n" END_MARKER;
         send_all(client_fd, version, strlen(version));
+        return true;
+    }
+
+    if (strncmp(cmd, CMD_DRIVER_AI, strlen(CMD_DRIVER_AI)) == 0) {
+        const char* rest = cmd + strlen(CMD_DRIVER_AI);
+        while (*rest == ' ') rest++;
+
+        handle_trace(client_fd, rest, TraceMode::Driver, true, true);
+        return true;
+    }
+
+    if (strncmp(cmd, CMD_LOAD_AI, strlen(CMD_LOAD_AI)) == 0) {
+        const char* rest = cmd + strlen(CMD_LOAD_AI);
+        while (*rest == ' ') rest++;
+
+        handle_trace(client_fd, rest, TraceMode::Load, true, true);
         return true;
     }
 
@@ -214,6 +254,27 @@ static bool handle_client(int client_fd, bool& should_quit) {
         while (*rest == ' ') rest++;
 
         handle_signal(client_fd, rest, false, true);
+        return true;
+    }
+
+    if (strncmp(cmd, CMD_PORT_TRACE_AI, strlen(CMD_PORT_TRACE_AI)) == 0) {
+        const char* rest = cmd + strlen(CMD_PORT_TRACE_AI);
+        while (*rest == ' ') rest++;
+        handle_port_command(client_fd, rest, "port.trace");
+        return true;
+    }
+
+    if (strncmp(cmd, CMD_INSTANCE_MAP_AI, strlen(CMD_INSTANCE_MAP_AI)) == 0) {
+        const char* rest = cmd + strlen(CMD_INSTANCE_MAP_AI);
+        while (*rest == ' ') rest++;
+        handle_port_command(client_fd, rest, "instance.map");
+        return true;
+    }
+
+    if (strncmp(cmd, CMD_INTERFACE_RESOLVE_AI, strlen(CMD_INTERFACE_RESOLVE_AI)) == 0) {
+        const char* rest = cmd + strlen(CMD_INTERFACE_RESOLVE_AI);
+        while (*rest == ' ') rest++;
+        handle_port_command(client_fd, rest, "interface.resolve");
         return true;
     }
 

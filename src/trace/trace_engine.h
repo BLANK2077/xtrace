@@ -32,6 +32,12 @@ struct TraceResult {
     std::string mode;
     std::vector<TraceRecord> results;
     std::vector<TraceRecord> control_dependencies;
+    std::vector<std::string> rhs_signals;
+    std::vector<std::string> assignments_json;
+    std::vector<std::string> dependency_edges_json;
+    std::string confidence = "unknown";
+    std::string confidence_reason;
+    std::string resolution = "unknown";
     std::string error;
     bool ok = true;
     bool truncated = false;
@@ -44,6 +50,7 @@ public:
 
     std::string render_text(const TraceResult& result) const;
     std::string render_json(const TraceResult& result) const;
+    std::string render_ai_json(const TraceResult& result) const;
 
 private:
     TraceResult trace_driver(const std::string& signal);
@@ -51,6 +58,9 @@ private:
     void apply_options(TraceResult& result, const TraceOptions& options) const;
 
     void extract_expr_signals(npiHandle expr, std::vector<std::string>& signals) const;
+    void enrich_driver_result(TraceResult& result, npiHandle stmt, const std::vector<std::string>& driver_signals) const;
+    void enrich_load_result(TraceResult& result, npiHandle stmt, const std::string& query_signal) const;
+    void finalize_ai_metadata(TraceResult& result) const;
     void extract_condition_deps(npiHandle condition,
                                 npiHandle stmt,
                                 std::vector<TraceRecord>& deps) const;
