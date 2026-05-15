@@ -153,6 +153,31 @@ tools/xtrace-env query -dbdir /path/to/simv.daidir --load test_top.valid_in -jso
 
 `query -json` returns both `session` and `trace` sections. On failure it reports `ok=false`, `status`, and `message`, which makes it suitable for agent decision loops.
 
+### AI JSON Interface
+
+For AI agents and xdebug-style orchestration, prefer the unified JSON entry point:
+
+```bash
+tools/xtrace-env ai query request.json
+tools/xtrace-env ai query -
+tools/xtrace-env ai query --json '{"api_version":"xtrace.ai.v1","action":"trace.driver","target":{"dbdir":"/path/to/simv.daidir","auto_ensure":true},"args":{"signal":"top.u_dut.ready"}}'
+tools/xtrace-env ai schema
+tools/xtrace-env ai actions
+```
+
+The AI response envelope always contains `ok/action/tool/session/summary/data/findings/suggested_next_actions/warnings/error/meta`. Action-specific payloads live under `summary` and `data`; use `ok` and `error.code` instead of parsing human text.
+
+Implemented AI actions include:
+
+- `session.open`, `session.ensure`, `session.list`, `session.doctor`, `session.kill`, `session.close`
+- `trace.driver`, `trace.load`, `trace.query`
+- `signal.resolve`, `signal.search`, `signal.canonicalize`
+- `trace.expand`, `trace.graph`, `trace.path`, `trace.explain`, `control.explain`, `source.context`
+- `expr.normalize`, `procedural.assignment`, `sequential.update`, `fsm.explain`, `counter.explain`, `port.trace`, `instance.map`, `interface.resolve`
+- `batch`
+
+AI trace responses add dependency-oriented fields such as `rhs_signals`, `dependency_edges`, `assignment`, `confidence`, and `confidence_reason` without changing the legacy `driver/load/query -json` output.
+
 ### Signal Discovery
 
 ```bash

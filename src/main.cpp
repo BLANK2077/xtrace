@@ -1,5 +1,6 @@
 #include "commands/cmd_session.h"
 #include "commands/cmd_trace.h"
+#include "commands/cmd_ai.h"
 #include "server/server.h"
 #include <cstring>
 #include <cstdio>
@@ -68,6 +69,10 @@ int main(int argc, char** argv) {
 
         fprintf(stderr, "Unknown session subcommand: %s\n", subcmd);
         return 1;
+    }
+
+    if (strcmp(cmd, "ai") == 0) {
+        return cmd_ai(argc, argv);
     }
 
     // Close - close latest session

@@ -126,6 +126,33 @@ tools/xtrace-env signal search signal -s 1 -json --limit 20
 
 ## Agent 调用建议
 
+- 面向 AI 编排时优先使用 `tools/xtrace-env ai query ...`，旧 CLI 仍适合人工排查。
+- `ai query` 支持 `request.json`、`-` stdin、`--json '<json>'` 三种输入。
+- `ai schema` 查看 request/response envelope；`ai actions` 查看已实现 action。
+- AI response 顶层固定包含 `ok/action/tool/session/summary/data/findings/suggested_next_actions/warnings/error/meta`。
+- 解析输出时先看 `ok` 和 `error.code`，不要解析人类文本。
+- 对 trace 类 action，优先使用 AI 输出中的 `dependency_edges`、`rhs_signals`、`assignment`、`confidence`、`confidence_reason`。
+- 对跨步 debug，先 `session.ensure`，后续请求使用 `target.session_id`。
+- 不确定信号路径时，用 `signal.search` 或 `signal.canonicalize` 恢复。
+- 批量查询用 `batch`，避免为每个子问题重复启动 session。
+
+AI JSON 示例：
+
+```bash
+tools/xtrace-env ai query --json '{"api_version":"xtrace.ai.v1","action":"trace.driver","target":{"dbdir":"/path/to/simv.daidir","auto_ensure":true},"args":{"signal":"top.u_dut.ready"},"limits":{"max_results":20},"output":{"include_expr":true}}'
+```
+
+常用 AI action：
+
+```text
+session.open/session.ensure/session.list/session.doctor/session.kill/session.close
+trace.driver/trace.load/trace.query
+signal.resolve/signal.search/signal.canonicalize
+trace.expand/trace.graph/trace.path/trace.explain/control.explain/source.context
+expr.normalize/procedural.assignment/sequential.update/fsm.explain/counter.explain
+port.trace/instance.map/interface.resolve/batch
+```
+
 - 首选 `query -dbdir <simv.daidir> <--driver|--load> <signal> -json`。
 - 需要复用已有 session 时，用 `session ensure -json` 获取 `session_id`。
 - 对 trace 结果较多的信号，先加 `--limit`，再根据 `roles/files` 摘要决定下一步。

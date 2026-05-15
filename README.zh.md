@@ -150,6 +150,31 @@ tools/xtrace-env query -dbdir /path/to/simv.daidir --load test_top.valid_in -jso
 
 `query -json` 输出包含 `session` 和 `trace` 两段；失败时输出 `ok=false`、`status` 和 `message`，便于 agent 做下一步决策。
 
+### AI JSON 接口
+
+面向 AI agent 和后续 xdebug 编排时，优先使用统一 JSON 入口：
+
+```bash
+tools/xtrace-env ai query request.json
+tools/xtrace-env ai query -
+tools/xtrace-env ai query --json '{"api_version":"xtrace.ai.v1","action":"trace.driver","target":{"dbdir":"/path/to/simv.daidir","auto_ensure":true},"args":{"signal":"top.u_dut.ready"}}'
+tools/xtrace-env ai schema
+tools/xtrace-env ai actions
+```
+
+AI response 顶层固定包含 `ok/action/tool/session/summary/data/findings/suggested_next_actions/warnings/error/meta`。具体 action 的字段放在 `summary` 和 `data` 中；脚本或 AI 应读取 `ok` 和 `error.code`，不要解析人类文本。
+
+已实现的 AI action 包括：
+
+- `session.open`、`session.ensure`、`session.list`、`session.doctor`、`session.kill`、`session.close`
+- `trace.driver`、`trace.load`、`trace.query`
+- `signal.resolve`、`signal.search`、`signal.canonicalize`
+- `trace.expand`、`trace.graph`、`trace.path`、`trace.explain`、`control.explain`、`source.context`
+- `expr.normalize`、`procedural.assignment`、`sequential.update`、`fsm.explain`、`counter.explain`、`port.trace`、`instance.map`、`interface.resolve`
+- `batch`
+
+AI trace 输出会在不改变旧 `driver/load/query -json` 的前提下，额外提供 `rhs_signals`、`dependency_edges`、`assignment`、`confidence`、`confidence_reason` 等面向因果推理的字段。
+
 ### 信号发现
 
 ```bash

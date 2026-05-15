@@ -20,6 +20,7 @@ SRCS        = src/main.cpp \
               src/client/client.cpp \
               src/commands/cmd_session.cpp \
               src/commands/cmd_trace.cpp \
+              src/commands/cmd_ai.cpp \
               src/server/server.cpp \
               src/control_dep/control_dep.cpp \
               src/trace/trace_engine.cpp \

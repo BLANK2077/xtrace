@@ -46,11 +46,13 @@ void print_help(const char* prog) {
     printf("  %s load   <sig> [-s <sid>] [-json]  Trace signal loads\n", prog);
     printf("  %s signal <resolve|search> <pattern> -s <sid> [-json] [--limit N]\n", prog);
     printf("  %s query -dbdir <simv.daidir> <--driver|--load> <sig> [-json] [filters]\n", prog);
+    printf("  %s ai <query|schema|actions> ...  AI JSON interface\n", prog);
     printf("  %s close               Close the latest session\n", prog);
     printf("  %s help                Show this help\n", prog);
     printf("\nExamples:\n");
     printf("  %s open -dbdir simv.daidir\n", prog);
     printf("  %s session ensure -dbdir simv.daidir -json\n", prog);
+    printf("  %s ai query --json '{\"api_version\":\"xtrace.ai.v1\",\"action\":\"trace.driver\",...}'\n", prog);
     printf("  %s session list\n", prog);
     printf("  %s session kill 1\n", prog);
 }

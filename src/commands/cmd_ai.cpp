@@ -1,0 +1,965 @@
+#include "cmd_ai.h"
+
+#include "../client/client.h"
+#include "../protocol/protocol.h"
+#include "../session/session_manager.h"
+#include "json.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace xtrace {
+
+using json = nlohmann::json;
+
+namespace {
+
+const char* API_VERSION = "xtrace.ai.v1";
+const char* TOOL_VERSION = "0.1.0";
+
+std::string read_stream(std::istream& in) {
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+std::string read_file(const std::string& path) {
+    std::ifstream in(path.c_str());
+    if (!in) return "";
+    return read_stream(in);
+}
+
+std::string trim(const std::string& s) {
+    size_t b = 0;
+    while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) b++;
+    size_t e = s.size();
+    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) e--;
+    return s.substr(b, e - b);
+}
+
+bool starts_with(const std::string& s, const std::string& prefix) {
+    return s.compare(0, prefix.size(), prefix) == 0;
+}
+
+json session_to_json(const SessionInfo& s) {
+    return {
+        {"id", s.session_id},
+        {"session_id", s.session_id},
+        {"dbdir", s.dbdir_path},
+        {"dbdir_path", s.dbdir_path},
+        {"design_file", s.design_file},
+        {"pid", s.server_pid},
+        {"socket_path", s.socket_path},
+        {"created_at", static_cast<long long>(s.created_at)},
+        {"last_active", static_cast<long long>(s.last_active)},
+        {"dbdir_mtime", s.dbdir_mtime},
+        {"dbdir_size", s.dbdir_size},
+        {"dbdir_dev", s.dbdir_dev},
+        {"dbdir_inode", s.dbdir_inode}
+    };
+}
+
+json base_response(const json& request, const std::string& action) {
+    json response;
+    response["api_version"] = API_VERSION;
+    response["request_id"] = request.value("request_id", "");
+    response["ok"] = true;
+    response["action"] = action;
+    response["tool"] = {{"name", "xtrace"}, {"version", TOOL_VERSION}};
+    response["session"] = nullptr;
+    response["summary"] = json::object();
+    response["data"] = json::object();
+    response["findings"] = json::array();
+    response["suggested_next_actions"] = json::array();
+    response["warnings"] = json::array();
+    response["error"] = nullptr;
+    response["meta"] = {{"elapsed_ms", nullptr}, {"truncated", false}};
+    return response;
+}
+
+json error_response(const json& request,
+                    const std::string& action,
+                    const std::string& code,
+                    const std::string& message,
+                    bool recoverable = true,
+                    const json& candidates = json::array(),
+                    const json& suggested_actions = json::array()) {
+    json response = base_response(request, action);
+    response["ok"] = false;
+    response["data"] = nullptr;
+    response["error"] = {
+        {"code", code},
+        {"message", message},
+        {"recoverable", recoverable},
+        {"candidates", candidates},
+        {"suggested_actions", suggested_actions}
+    };
+    response["suggested_next_actions"] = suggested_actions;
+    return response;
+}
+
+std::vector<std::string> target_dbdir_args(const json& request) {
+    std::vector<std::string> args;
+    if (!request.contains("target") || !request["target"].is_object()) return args;
+    const json& target = request["target"];
+    std::string dbdir = target.value("dbdir", "");
+    if (!dbdir.empty()) {
+        args.push_back("-dbdir");
+        args.push_back(dbdir);
+    }
+    return args;
+}
+
+bool ensure_target_session(const json& request,
+                           json& response,
+                           int& session_id,
+                           SessionInfo& session,
+                           bool allow_latest = false) {
+    SessionManager manager;
+    const json target = request.value("target", json::object());
+
+    if (target.contains("session_id") && target["session_id"].is_number_integer()) {
+        session_id = target["session_id"].get<int>();
+        if (!manager.get_session(session_id, session)) {
+            SessionHealth health = manager.diagnose_session(session_id);
+            response = error_response(request, request.value("action", ""),
+                                      "SESSION_NOT_FOUND",
+                                      health.message.empty() ? "session not found" : health.message);
+            return false;
+        }
+        response["session"] = session_to_json(session);
+        return true;
+    }
+
+    std::vector<std::string> design_args = target_dbdir_args(request);
+    if (!design_args.empty()) {
+        bool auto_ensure = target.value("auto_ensure", true);
+        if (!auto_ensure) {
+            response = error_response(request, request.value("action", ""),
+                                      "INVALID_TARGET",
+                                      "target.dbdir requires auto_ensure=true or an existing session_id");
+            return false;
+        }
+        SessionEnsureResult ensured = manager.ensure_session(design_args);
+        if (!ensured.ok) {
+            response = error_response(request, request.value("action", ""),
+                                      "SESSION_UNHEALTHY",
+                                      ensured.message.empty() ? "failed to ensure session" : ensured.message);
+            return false;
+        }
+        session_id = ensured.session_id;
+        session = ensured.info;
+        response["session"] = session_to_json(session);
+        response["session"]["reused"] = ensured.reused;
+        response["session"]["healthy"] = true;
+        return true;
+    }
+
+    if (allow_latest && manager.get_latest_session(session)) {
+        session_id = session.session_id;
+        response["session"] = session_to_json(session);
+        return true;
+    }
+
+    response = error_response(request, request.value("action", ""),
+                              "INVALID_TARGET",
+                              "target must contain session_id or dbdir");
+    return false;
+}
+
+std::string option_string_from_limits_args(const json& request) {
+    std::string options;
+    const json args = request.value("args", json::object());
+    const json limits = request.value("limits", json::object());
+
+    int limit = 0;
+    if (limits.contains("max_results")) limit = limits.value("max_results", 0);
+    if (limits.contains("max_rows") && limit <= 0) limit = limits.value("max_rows", 0);
+    if (args.contains("limit") && args["limit"].is_number_integer()) limit = args["limit"].get<int>();
+    if (limit > 0) options += " --limit " + std::to_string(limit);
+
+    std::string role = args.value("role", "");
+    if (!role.empty()) options += " --role " + role;
+    if (args.value("no_statement_only", false)) options += " --no-statement-only";
+    return options;
+}
+
+bool send_json_command(int session_id,
+                       const std::string& cmd,
+                       json& parsed,
+                       std::string& error_status,
+                       std::string& error_message) {
+    std::string payload;
+    if (!send_command_capture(session_id, cmd.c_str(), payload, error_status, error_message)) {
+        return false;
+    }
+    try {
+        parsed = json::parse(payload);
+    } catch (const std::exception& e) {
+        error_status = "invalid_json";
+        error_message = e.what();
+        return false;
+    }
+    return true;
+}
+
+int find_top_level_op(const std::string& s, const std::string& op) {
+    int depth = 0;
+    for (int i = static_cast<int>(s.size()) - static_cast<int>(op.size()); i >= 0; --i) {
+        char c = s[i];
+        if (c == ')') depth++;
+        else if (c == '(') depth--;
+        if (depth == 0 && s.compare(i, op.size(), op) == 0) return i;
+    }
+    return -1;
+}
+
+json parse_expr_ast(const std::string& expr);
+
+json parse_atom(const std::string& text) {
+    std::string s = trim(text);
+    if (s.empty()) return {{"type", "unknown"}, {"text", ""}};
+    if (s.size() >= 2 && s.front() == '(' && s.back() == ')') {
+        return parse_expr_ast(s.substr(1, s.size() - 2));
+    }
+    if (s[0] == '!') {
+        return {{"op", "not"}, {"args", json::array({parse_expr_ast(s.substr(1))})}};
+    }
+    bool numeric_or_const = false;
+    for (char c : s) {
+        if (std::isdigit(static_cast<unsigned char>(c)) || c == '\'' || c == 'h' || c == 'b' || c == 'd' ||
+            c == 'x' || c == 'z' || c == '_' || c == '-') {
+            numeric_or_const = true;
+        } else {
+            numeric_or_const = false;
+            break;
+        }
+    }
+    if (numeric_or_const || s == "RUN" || s == "IDLE" || s == "BUSY") {
+        return {{"type", "const"}, {"value", s}};
+    }
+    return {{"type", "signal"}, {"name", s}};
+}
+
+json parse_expr_ast(const std::string& expr) {
+    std::string s = trim(expr);
+    if (s.empty()) return {{"type", "unknown"}, {"text", ""}};
+
+    int qpos = find_top_level_op(s, "?");
+    if (qpos >= 0) {
+        int depth = 0;
+        for (size_t i = qpos + 1; i < s.size(); ++i) {
+            if (s[i] == '(') depth++;
+            else if (s[i] == ')') depth--;
+            else if (s[i] == ':' && depth == 0) {
+                return {{"op", "ternary"},
+                        {"args", json::array({parse_expr_ast(s.substr(0, qpos)),
+                                               parse_expr_ast(s.substr(qpos + 1, i - qpos - 1)),
+                                               parse_expr_ast(s.substr(i + 1))})}};
+            }
+        }
+    }
+
+    const std::vector<std::pair<std::string, std::string>> ops = {
+        {"||", "or"}, {"&&", "and"}, {"!=", "neq"}, {"==", "eq"},
+        {">=", "ge"}, {"<=", "le"}, {">", "gt"}, {"<", "lt"},
+        {"+", "add"}, {"-", "sub"}, {"*", "mul"}
+    };
+    for (const auto& item : ops) {
+        int pos = find_top_level_op(s, item.first);
+        if (pos > 0) {
+            return {{"op", item.second},
+                    {"args", json::array({parse_expr_ast(s.substr(0, pos)),
+                                           parse_expr_ast(s.substr(pos + item.first.size()))})}};
+        }
+    }
+    return parse_atom(s);
+}
+
+std::string rhs_from_source(const std::string& source) {
+    std::string s = trim(source);
+    size_t eq = std::string::npos;
+    size_t le = s.find("<=");
+    if (le != std::string::npos) eq = le + 1;
+    else eq = s.find('=');
+    if (eq == std::string::npos) return "";
+    std::string rhs = s.substr(eq + 1);
+    size_t semi = rhs.rfind(';');
+    if (semi != std::string::npos) rhs = rhs.substr(0, semi);
+    return trim(rhs);
+}
+
+std::string assignment_kind_from_source(const std::string& source) {
+    std::string s = trim(source);
+    if (starts_with(s, "assign ")) return "continuous_assign";
+    if (s.find("<=") != std::string::npos) return "clocked_update";
+    if (s.find("=") != std::string::npos) return "procedural_assignment";
+    return "statement_only";
+}
+
+std::string confidence_for_trace(const json& trace) {
+    if (!trace.value("ok", true)) return "unknown";
+    if (trace.value("has_statement_only", false)) return "low";
+    int count = trace.value("result_count", 0);
+    if (count <= 0 && trace.value("control_dependency_count", 0) <= 0) return "unknown";
+    bool has_source = false;
+    for (const auto& r : trace.value("results", json::array())) {
+        if (!r.value("source", "").empty()) has_source = true;
+    }
+    if (has_source) return "high";
+    return "medium";
+}
+
+json enrich_trace_payload(const json& request, const json& trace) {
+    json out = trace;
+    std::string query = trace.value("query", request.value("args", json::object()).value("signal", ""));
+    std::string mode = trace.value("mode", "driver");
+
+    json rhs_signals = json::array();
+    json edges = json::array();
+    json records = trace.value("results", json::array());
+    for (const auto& r : records) {
+        std::string signal = r.value("signal", "");
+        std::string role = r.value("role", "");
+        std::string resolution = r.value("resolution", "");
+        if (!signal.empty() && resolution != "statement_only") rhs_signals.push_back(signal);
+
+        std::string edge_type = resolution == "statement_only" ? "statement_only" : "data_dependency";
+        if (role == "lhs_target") edge_type = "load_dependency";
+        json edge = {
+            {"from", mode == "driver" ? signal : query},
+            {"to", mode == "driver" ? query : signal},
+            {"type", edge_type},
+            {"role", role},
+            {"file", r.value("file", "")},
+            {"line", r.value("line", 0)},
+            {"source", r.value("source", "")},
+            {"resolution", resolution}
+        };
+        edges.push_back(edge);
+    }
+
+    for (const auto& r : trace.value("control_dependencies", json::array())) {
+        std::string signal = r.value("signal", "");
+        edges.push_back({
+            {"from", signal},
+            {"to", query},
+            {"type", "control_dependency"},
+            {"relation", "controls_assignment"},
+            {"file", r.value("file", "")},
+            {"line", r.value("line", 0)},
+            {"source", r.value("source", "")},
+            {"resolution", r.value("resolution", "")}
+        });
+    }
+
+    std::string confidence = confidence_for_trace(trace);
+    out["rhs_signals"] = rhs_signals;
+    out["dependency_edges"] = edges;
+    out["confidence"] = confidence;
+    out["confidence_reason"] =
+        confidence == "high" ? "exact signal references with source locations were resolved" :
+        confidence == "medium" ? "trace records were resolved but structured expression is incomplete" :
+        confidence == "low" ? "trace contains statement_only or fallback records" :
+        "no reliable trace result was resolved";
+
+    if (!records.empty()) {
+        std::string source = records[0].value("source", "");
+        std::string rhs = rhs_from_source(source);
+        if (!rhs.empty()) {
+            out["assignment"] = {
+                {"kind", assignment_kind_from_source(source)},
+                {"lhs", {{"type", "signal"}, {"name", query}}},
+                {"rhs", parse_expr_ast(rhs)},
+                {"source", source}
+            };
+        }
+    }
+    return out;
+}
+
+json make_trace_summary(const json& trace) {
+    return {
+        {"query", trace.value("query", "")},
+        {"mode", trace.value("mode", "")},
+        {"result_count", trace.value("result_count", 0)},
+        {"control_dependency_count", trace.value("control_dependency_count", 0)},
+        {"truncated", trace.value("truncated", false)},
+        {"confidence", trace.value("confidence", "unknown")}
+    };
+}
+
+json run_trace_action(const json& request, const std::string& mode) {
+    json response = base_response(request, request.value("action", ""));
+    int session_id = -1;
+    SessionInfo session;
+    if (!ensure_target_session(request, response, session_id, session)) return response;
+
+    json args = request.value("args", json::object());
+    std::string signal = args.value("signal", args.value("root_signal", ""));
+    if (signal.empty()) {
+        return error_response(request, request.value("action", ""), "MISSING_FIELD", "args.signal is required");
+    }
+
+    std::string cmd = (mode == "load" ? CMD_LOAD_JSON : CMD_DRIVER_JSON);
+    cmd += " " + signal + option_string_from_limits_args(request);
+
+    json trace;
+    std::string status, message;
+    if (!send_json_command(session_id, cmd, trace, status, message)) {
+        return error_response(request, request.value("action", ""), "SESSION_UNHEALTHY", message.empty() ? status : message);
+    }
+
+    json enriched = enrich_trace_payload(request, trace);
+    response["ok"] = enriched.value("ok", true);
+    response["summary"] = make_trace_summary(enriched);
+    response["data"] = enriched;
+    response["meta"]["truncated"] = enriched.value("truncated", false);
+    if (!response["ok"].get<bool>()) {
+        response["error"] = {
+            {"code", "SIGNAL_NOT_FOUND"},
+            {"message", enriched.value("error", "trace failed")},
+            {"recoverable", true},
+            {"candidates", json::array()},
+            {"suggested_actions", json::array({{
+                {"tool", "xtrace"},
+                {"action", "signal.search"},
+                {"reason", "exact signal was not found"},
+                {"args", {{"query", signal}}}
+            }})}
+        };
+    }
+    return response;
+}
+
+json run_signal_action(const json& request, bool resolve) {
+    json response = base_response(request, request.value("action", ""));
+    int session_id = -1;
+    SessionInfo session;
+    if (!ensure_target_session(request, response, session_id, session)) return response;
+
+    json args = request.value("args", json::object());
+    std::string query = args.value("signal", args.value("query", ""));
+    if (query.empty()) return error_response(request, request.value("action", ""), "MISSING_FIELD", "args.signal or args.query is required");
+
+    int limit = request.value("limits", json::object()).value("max_results", args.value("limit", 20));
+    std::string cmd = std::string(resolve ? CMD_SIGNAL_RESOLVE : CMD_SIGNAL_SEARCH) + " " + query;
+    if (limit > 0) cmd += " --limit " + std::to_string(limit);
+
+    json payload;
+    std::string status, message;
+    if (!send_json_command(session_id, cmd, payload, status, message)) {
+        return error_response(request, request.value("action", ""), "SESSION_UNHEALTHY", message.empty() ? status : message);
+    }
+    response["ok"] = payload.value("ok", true);
+    response["summary"] = {
+        {"query", payload.value("query", query)},
+        {"count", payload.value("count", 0)},
+        {"truncated", payload.value("truncated", false)}
+    };
+    response["data"] = payload;
+    response["meta"]["truncated"] = payload.value("truncated", false);
+    if (!response["ok"].get<bool>()) {
+        response["error"] = {
+            {"code", "SIGNAL_NOT_FOUND"},
+            {"message", payload.value("message", "signal not found")},
+            {"recoverable", true},
+            {"candidates", payload.value("matches", json::array())},
+            {"suggested_actions", json::array()}
+        };
+    }
+    return response;
+}
+
+json canonicalize_signal(const json& request) {
+    json resolved = run_signal_action(request, true);
+    if (!resolved.value("ok", false)) return resolved;
+    json data = resolved.value("data", json::object());
+    std::string query = data.value("query", request.value("args", json::object()).value("signal", ""));
+    std::string canonical = query;
+    json matches = data.value("matches", json::array());
+    if (!matches.empty()) canonical = matches[0].value("signal", query);
+    resolved["summary"]["canonical"] = canonical;
+    resolved["data"]["canonical"] = canonical;
+    resolved["data"]["rtl_path"] = canonical;
+    resolved["data"]["aliases"] = json::array({query, canonical});
+    resolved["data"]["fsdb_candidates"] = json::array({canonical});
+    resolved["data"]["port_mappings"] = json::array();
+    return resolved;
+}
+
+json graph_from_trace(const json& trace, const std::string& root) {
+    json nodes = json::array();
+    json edges = trace.value("dependency_edges", json::array());
+    std::map<std::string, std::string> ids;
+    auto add_node = [&](const std::string& signal, const std::string& role) {
+        if (signal.empty() || ids.count(signal)) return;
+        std::string id = "n" + std::to_string(ids.size());
+        ids[signal] = id;
+        nodes.push_back({{"id", id}, {"signal", signal}, {"kind", "signal"}, {"role", role}});
+    };
+    add_node(root, "root");
+    for (const auto& e : edges) {
+        add_node(e.value("from", ""), "dependency");
+        add_node(e.value("to", ""), "dependency");
+    }
+    json graph_edges = json::array();
+    for (auto e : edges) {
+        std::string from = e.value("from", "");
+        std::string to = e.value("to", "");
+        e["from"] = ids.count(from) ? ids[from] : from;
+        e["to"] = ids.count(to) ? ids[to] : to;
+        e["from_signal"] = from;
+        e["to_signal"] = to;
+        graph_edges.push_back(e);
+    }
+    return {{"nodes", nodes}, {"edges", graph_edges}};
+}
+
+json trace_expand_like(const json& request, bool explain_only = false) {
+    json response = base_response(request, request.value("action", ""));
+    int session_id = -1;
+    SessionInfo session;
+    if (!ensure_target_session(request, response, session_id, session)) return response;
+
+    json args = request.value("args", json::object());
+    std::string root = args.value("root_signal", args.value("signal", ""));
+    std::string direction = args.value("direction", "driver");
+    if (root.empty()) return error_response(request, request.value("action", ""), "MISSING_FIELD", "args.root_signal or args.signal is required");
+
+    const json limits = request.value("limits", json::object());
+    int max_depth = limits.value("max_depth", 1);
+    int max_nodes = limits.value("max_nodes", 100);
+    int max_edges = limits.value("max_edges", 200);
+    if (max_depth < 1) max_depth = 1;
+    if (max_nodes < 1) max_nodes = 1;
+    if (max_edges < 1) max_edges = 1;
+
+    json all_edges = json::array();
+    json traces = json::array();
+    std::set<std::string> visited;
+    std::vector<std::pair<std::string, int>> queue;
+    queue.push_back(std::make_pair(root, 0));
+    bool truncated = false;
+    int reached_depth = 0;
+
+    for (size_t qi = 0; qi < queue.size(); ++qi) {
+        std::string current = queue[qi].first;
+        int depth = queue[qi].second;
+        reached_depth = std::max(reached_depth, depth);
+        if (visited.count(current)) continue;
+        if ((int)visited.size() >= max_nodes) {
+            truncated = true;
+            break;
+        }
+        visited.insert(current);
+        if (depth >= max_depth) continue;
+
+        json trace_req = request;
+        trace_req["action"] = direction == "load" ? "trace.load" : "trace.driver";
+        trace_req["target"] = {{"session_id", session_id}};
+        trace_req["args"]["signal"] = current;
+        json trace_resp = run_trace_action(trace_req, direction == "load" ? "load" : "driver");
+        if (!trace_resp.value("ok", false)) {
+            continue;
+        }
+        json trace = trace_resp["data"];
+        traces.push_back(trace);
+        if (trace.value("truncated", false)) truncated = true;
+        for (const auto& e : trace.value("dependency_edges", json::array())) {
+            if ((int)all_edges.size() >= max_edges) {
+                truncated = true;
+                break;
+            }
+            all_edges.push_back(e);
+            std::string next = direction == "load" ? e.value("to", "") : e.value("from", "");
+            if (!next.empty() && !visited.count(next) && (int)queue.size() < max_nodes) {
+                queue.push_back(std::make_pair(next, depth + 1));
+            } else if ((int)queue.size() >= max_nodes) {
+                truncated = true;
+            }
+        }
+        if ((int)all_edges.size() >= max_edges) {
+            truncated = true;
+            break;
+        }
+    }
+
+    json trace = {
+        {"query", root},
+        {"mode", direction},
+        {"dependency_edges", all_edges},
+        {"confidence", traces.empty() ? "unknown" : traces[0].value("confidence", "unknown")},
+        {"truncated", truncated}
+    };
+    json graph = graph_from_trace(trace, root);
+    response["summary"] = {
+        {"root_signal", root},
+        {"direction", direction},
+        {"depth", reached_depth},
+        {"node_count", graph["nodes"].size()},
+        {"edge_count", graph["edges"].size()},
+        {"truncated", truncated}
+    };
+    response["meta"]["truncated"] = truncated;
+    if (explain_only) {
+        json explanations = json::array();
+        for (const auto& e : trace.value("dependency_edges", json::array())) {
+            explanations.push_back({
+                {"claim", root + " depends on " + e.value("from", "")},
+                {"evidence", json::array({{
+                    {"type", e.value("type", "dependency")},
+                    {"file", e.value("file", "")},
+                    {"line", e.value("line", 0)},
+                    {"source", e.value("source", "")}
+                }})},
+                {"related_signals", json::array({e.value("from", "")})},
+                {"confidence", trace.value("confidence", "unknown")}
+            });
+        }
+        response["summary"]["explanation_count"] = explanations.size();
+        response["data"] = {{"explanations", explanations}, {"trace", trace}, {"traces", traces}};
+        response["suggested_next_actions"] = json::array({{
+            {"tool", "xwave"},
+            {"action", "value.at"},
+            {"reason", "verify dependency signal value at the observed waveform time"},
+            {"args", {{"signal", root}}}
+        }});
+    } else {
+        response["data"] = {{"graph", graph}, {"trace", trace}, {"traces", traces}};
+    }
+    return response;
+}
+
+json trace_path(const json& request) {
+    json args = request.value("args", json::object());
+    std::string from = args.value("from_signal", "");
+    std::string to = args.value("to_signal", "");
+    json expand_req = request;
+    if (!args.contains("root_signal") && !args.contains("signal") && !to.empty()) {
+        expand_req["args"]["root_signal"] = to;
+    }
+    json response = trace_expand_like(expand_req, false);
+    if (!response.value("ok", false)) return response;
+    bool found = false;
+    json paths = json::array();
+    for (const auto& e : response["data"]["graph"].value("edges", json::array())) {
+        if ((from.empty() || e.value("from_signal", "") == from) &&
+            (to.empty() || e.value("to_signal", "") == to)) {
+            found = true;
+            paths.push_back(json::array({e}));
+        }
+    }
+    response["summary"]["from_signal"] = from;
+    response["summary"]["to_signal"] = to;
+    response["summary"]["path_count"] = paths.size();
+    response["summary"]["found"] = found;
+    response["data"]["paths"] = paths;
+    return response;
+}
+
+json source_context(const json& request) {
+    json response = base_response(request, request.value("action", ""));
+    json args = request.value("args", json::object());
+    std::string file = args.value("file", "");
+    int line = args.value("line", 0);
+    int context_lines = args.value("context_lines", 8);
+    if (file.empty() || line <= 0) {
+        return error_response(request, request.value("action", ""), "MISSING_FIELD", "args.file and args.line are required");
+    }
+    std::ifstream in(file.c_str());
+    if (!in) return error_response(request, request.value("action", ""), "SOURCE_NOT_FOUND", "source file not found: " + file);
+    std::vector<std::string> lines;
+    std::string s;
+    while (std::getline(in, s)) lines.push_back(s);
+    if (line > static_cast<int>(lines.size())) return error_response(request, request.value("action", ""), "INVALID_REQUEST", "line is out of range");
+    int begin = std::max(1, line - context_lines);
+    int end = std::min(static_cast<int>(lines.size()), line + context_lines);
+    json ctx = json::array();
+    for (int i = begin; i <= end; ++i) {
+        ctx.push_back({{"line", i}, {"text", lines[i - 1]}, {"hit", i == line}});
+    }
+    response["summary"] = {{"file", file}, {"line", line}};
+    response["data"] = {
+        {"context", ctx},
+        {"enclosing", {{"type", "unknown"}, {"name", ""}, {"begin_line", begin}, {"end_line", end}}}
+    };
+    return response;
+}
+
+json control_explain(const json& request) {
+    json trace_req = request;
+    trace_req["action"] = "trace.driver";
+    json trace_resp = run_trace_action(trace_req, "driver");
+    if (!trace_resp.value("ok", false)) return trace_resp;
+    json deps = trace_resp["data"].value("control_dependencies", json::array());
+    trace_resp["action"] = request.value("action", "control.explain");
+    trace_resp["summary"] = {
+        {"signal", request.value("args", json::object()).value("signal", "")},
+        {"control_dependency_count", deps.size()}
+    };
+    trace_resp["data"] = {{"control_dependencies", deps}};
+    return trace_resp;
+}
+
+json procedural_or_seq_placeholder(const json& request, const std::string& kind) {
+    json trace_req = request;
+    trace_req["action"] = "trace.driver";
+    json trace_resp = run_trace_action(trace_req, "driver");
+    if (!trace_resp.value("ok", false)) return trace_resp;
+    json assignment = trace_resp["data"].value("assignment", json::object());
+    json response = base_response(request, request.value("action", ""));
+    response["session"] = trace_resp["session"];
+    response["summary"] = {
+        {"signal", request.value("args", json::object()).value("signal", "")},
+        {"kind", kind},
+        {"confidence", trace_resp["data"].value("confidence", "unknown")}
+    };
+    if (kind == "sequential_update") {
+        response["data"] = {{"sequential_update", {
+            {"target", request.value("args", json::object()).value("signal", "")},
+            {"clock", nullptr},
+            {"reset", nullptr},
+            {"rules", assignment.empty() ? json::array() : json::array({assignment})}
+        }}};
+    } else {
+        response["data"] = {{kind, {
+            {"target", request.value("args", json::object()).value("signal", "")},
+            {"assignments", assignment.empty() ? json::array() : json::array({assignment})},
+            {"confidence", trace_resp["data"].value("confidence", "unknown")}
+        }}};
+    }
+    return response;
+}
+
+json schema_payload() {
+    return {
+        {"api_version", API_VERSION},
+        {"request", {
+            {"api_version", API_VERSION},
+            {"request_id", "optional-id"},
+            {"action", "trace.driver"},
+            {"target", {{"dbdir", "/path/to/simv.daidir"}, {"session_id", nullptr}, {"auto_ensure", true}}},
+            {"args", json::object()},
+            {"limits", {{"max_results", 50}, {"max_depth", 1}, {"max_paths", 10}, {"timeout_ms", 5000}}},
+            {"output", {{"verbosity", "compact"}, {"include_source", true}, {"include_control_dependencies", true}, {"include_expr", true}, {"include_graph", false}}}
+        }},
+        {"response", {
+            {"ok", true},
+            {"action", "trace.driver"},
+            {"tool", {{"name", "xtrace"}, {"version", TOOL_VERSION}}},
+            {"session", json::object()},
+            {"summary", json::object()},
+            {"data", json::object()},
+            {"findings", json::array()},
+            {"suggested_next_actions", json::array()},
+            {"warnings", json::array()},
+            {"error", nullptr},
+            {"meta", json::object()}
+        }}
+    };
+}
+
+json actions_payload() {
+    json implemented = json::array({
+        "session.open", "session.ensure", "session.list", "session.doctor", "session.kill", "session.close",
+        "trace.driver", "trace.load", "trace.query",
+        "signal.resolve", "signal.search", "signal.canonicalize",
+        "trace.expand", "trace.graph", "trace.path", "trace.explain",
+        "control.explain", "source.context",
+        "expr.normalize", "procedural.assignment", "sequential.update",
+        "fsm.explain", "counter.explain", "port.trace", "instance.map", "interface.resolve",
+        "batch"
+    });
+    return {{"api_version", API_VERSION}, {"implemented", implemented}};
+}
+
+json handle_request(const json& request);
+
+json run_batch(const json& request) {
+    json response = base_response(request, "batch");
+    json args = request.value("args", json::object());
+    json requests = args.value("requests", json::array());
+    std::string mode = args.value("mode", "continue_on_error");
+    json results = json::array();
+    bool all_ok = true;
+    for (auto child : requests) {
+        if (!child.contains("api_version")) child["api_version"] = API_VERSION;
+        json child_resp = handle_request(child);
+        if (!child_resp.value("ok", false)) all_ok = false;
+        results.push_back(child_resp);
+        if (!child_resp.value("ok", false) && mode == "stop_on_error") break;
+    }
+    response["ok"] = all_ok;
+    response["summary"] = {{"count", results.size()}, {"all_ok", all_ok}};
+    response["data"] = {{"results", results}};
+    return response;
+}
+
+json handle_session_action(const json& request, const std::string& action) {
+    json response = base_response(request, action);
+    SessionManager manager;
+    if (action == "session.open" || action == "session.ensure") {
+        std::vector<std::string> args = target_dbdir_args(request);
+        if (args.empty()) return error_response(request, action, "INVALID_TARGET", "target.dbdir is required");
+        SessionEnsureResult result = manager.ensure_session(args);
+        if (!result.ok) return error_response(request, action, "SESSION_UNHEALTHY", result.message);
+        response["session"] = session_to_json(result.info);
+        response["session"]["reused"] = result.reused;
+        response["session"]["healthy"] = true;
+        response["summary"] = {{"session_id", result.session_id}, {"status", result.status}, {"reused", result.reused}};
+        response["data"] = {{"session", response["session"]}};
+        return response;
+    }
+    if (action == "session.list") {
+        json sessions = json::array();
+        for (const auto& s : manager.list_sessions()) sessions.push_back(session_to_json(s));
+        response["summary"] = {{"count", sessions.size()}};
+        response["data"] = {{"sessions", sessions}};
+        return response;
+    }
+    if (action == "session.doctor") {
+        int sid = request.value("target", json::object()).value("session_id", request.value("args", json::object()).value("session_id", 0));
+        if (sid <= 0) return error_response(request, action, "MISSING_FIELD", "target.session_id or args.session_id is required");
+        SessionHealth h = manager.diagnose_session(sid);
+        response["ok"] = h.healthy;
+        response["session"] = session_to_json(h.info);
+        response["summary"] = {{"session_id", sid}, {"healthy", h.healthy}, {"status", session_health_status_name(h.status)}, {"message", h.message}};
+        response["data"] = {{"health", response["summary"]}};
+        if (!h.healthy) response["error"] = {{"code", "SESSION_UNHEALTHY"}, {"message", h.message}, {"recoverable", true}, {"candidates", json::array()}, {"suggested_actions", json::array()}};
+        return response;
+    }
+    if (action == "session.kill" || action == "session.close") {
+        json args = request.value("args", json::object());
+        if (args.value("id", "") == "all") {
+            bool ok = manager.kill_all_sessions();
+            response["ok"] = ok;
+            response["summary"] = {{"target", "all"}, {"killed", ok}};
+            return response;
+        }
+        int sid = 0;
+        json target = request.value("target", json::object());
+        if (target.contains("session_id") && target["session_id"].is_number_integer()) {
+            sid = target["session_id"].get<int>();
+        } else if (args.contains("session_id") && args["session_id"].is_number_integer()) {
+            sid = args["session_id"].get<int>();
+        } else if (args.contains("id")) {
+            if (args["id"].is_number_integer()) sid = args["id"].get<int>();
+            else if (args["id"].is_string()) sid = atoi(args["id"].get<std::string>().c_str());
+        }
+        if (sid <= 0 && action == "session.close") {
+            SessionInfo latest;
+            if (manager.get_latest_session(latest)) sid = latest.session_id;
+        }
+        if (sid <= 0) return error_response(request, action, "MISSING_FIELD", "session id is required");
+        bool ok = manager.kill_session(sid);
+        response["ok"] = ok;
+        response["summary"] = {{"session_id", sid}, {"killed", ok}};
+        if (!ok) response["error"] = {{"code", "SESSION_NOT_FOUND"}, {"message", "failed to kill session"}, {"recoverable", true}, {"candidates", json::array()}, {"suggested_actions", json::array()}};
+        return response;
+    }
+    return error_response(request, action, "UNKNOWN_ACTION", "unknown session action");
+}
+
+json handle_request(const json& request) {
+    std::string action = request.value("action", "");
+    if (request.value("api_version", std::string(API_VERSION)) != API_VERSION) {
+        return error_response(request, action, "UNSUPPORTED_API_VERSION", "expected xtrace.ai.v1", false);
+    }
+    if (action.empty()) return error_response(request, action, "MISSING_FIELD", "action is required");
+
+    if (action == "batch") return run_batch(request);
+    if (starts_with(action, "session.")) return handle_session_action(request, action);
+    if (action == "trace.driver") return run_trace_action(request, "driver");
+    if (action == "trace.load") return run_trace_action(request, "load");
+    if (action == "trace.query") {
+        std::string mode = request.value("args", json::object()).value("mode", "driver");
+        return run_trace_action(request, mode == "load" ? "load" : "driver");
+    }
+    if (action == "signal.resolve") return run_signal_action(request, true);
+    if (action == "signal.search") return run_signal_action(request, false);
+    if (action == "signal.canonicalize") return canonicalize_signal(request);
+    if (action == "trace.expand" || action == "trace.graph") return trace_expand_like(request, false);
+    if (action == "trace.path") return trace_path(request);
+    if (action == "trace.explain") return trace_expand_like(request, true);
+    if (action == "control.explain") return control_explain(request);
+    if (action == "source.context") return source_context(request);
+    if (action == "expr.normalize") {
+        json response = base_response(request, action);
+        std::string expr = request.value("args", json::object()).value("expr", "");
+        if (expr.empty()) return error_response(request, action, "MISSING_FIELD", "args.expr is required");
+        response["summary"] = {{"expr", expr}};
+        response["data"] = {{"expr", parse_expr_ast(expr)}};
+        return response;
+    }
+    if (action == "procedural.assignment") return procedural_or_seq_placeholder(request, "procedural_assignment");
+    if (action == "sequential.update") return procedural_or_seq_placeholder(request, "sequential_update");
+    if (action == "fsm.explain") return procedural_or_seq_placeholder(request, "fsm_explain");
+    if (action == "counter.explain") return procedural_or_seq_placeholder(request, "counter_explain");
+    if (action == "port.trace" || action == "instance.map" || action == "interface.resolve") return trace_expand_like(request, false);
+
+    return error_response(request, action, "UNKNOWN_ACTION", "unknown action: " + action, true);
+}
+
+int print_json_and_return(const json& payload) {
+    printf("%s\n", payload.dump(2).c_str());
+    return payload.value("ok", true) ? 0 : 1;
+}
+
+} // namespace
+
+int cmd_ai(int argc, char** argv) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s ai <query|schema|actions>\n", argv[0]);
+        return 1;
+    }
+
+    std::string subcmd = argv[2];
+    if (subcmd == "schema") {
+        printf("%s\n", schema_payload().dump(2).c_str());
+        return 0;
+    }
+    if (subcmd == "actions") {
+        printf("%s\n", actions_payload().dump(2).c_str());
+        return 0;
+    }
+    if (subcmd != "query") {
+        json req = {{"api_version", API_VERSION}, {"action", ""}};
+        return print_json_and_return(error_response(req, "", "UNKNOWN_ACTION", "unknown ai subcommand: " + subcmd));
+    }
+
+    std::string input;
+    if (argc >= 5 && std::string(argv[3]) == "--json") {
+        input = argv[4];
+    } else if (argc >= 4 && std::string(argv[3]) == "-") {
+        input = read_stream(std::cin);
+    } else if (argc >= 4) {
+        input = read_file(argv[3]);
+        if (input.empty()) {
+            json req = {{"api_version", API_VERSION}, {"action", ""}};
+            return print_json_and_return(error_response(req, "", "INVALID_REQUEST", "failed to read request file"));
+        }
+    } else {
+        json req = {{"api_version", API_VERSION}, {"action", ""}};
+        return print_json_and_return(error_response(req, "", "INVALID_REQUEST", "ai query requires a file, -, or --json"));
+    }
+
+    try {
+        json request = json::parse(input);
+        return print_json_and_return(handle_request(request));
+    } catch (const std::exception& e) {
+        json req = {{"api_version", API_VERSION}, {"action", ""}};
+        return print_json_and_return(error_response(req, "", "INVALID_REQUEST", e.what()));
+    }
+}
+
+} // namespace xtrace
