@@ -85,6 +85,8 @@ AI usage rules:
 - Use external `rg`/grep on RTL source to discover candidate names; xtrace only resolves exact paths.
 - Use `limits.max_results/max_depth/max_paths` for graph and broad trace actions.
 - Use `batch` for multi-step debug plans to reduce repeated session setup.
+- Runtime state lives under `~/.xtrace/`: `registry.json`, `registry.lock`, and `sessions/<sid>/session.json`, `socket`, `debug.log`. Older top-level `~/.xtrace.registry` is a legacy migration input only.
+- For session startup failures, rerun with `--debug` or `XTRACE_DEBUG=1` and inspect `~/.xtrace/sessions/<sid>/debug.log`.
 
 ## Session Actions
 

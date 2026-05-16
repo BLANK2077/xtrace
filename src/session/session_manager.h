@@ -34,7 +34,20 @@ struct SessionEnsureResult {
     SessionInfo info;
 };
 
+struct WaitForServerResult {
+    bool ok = false;
+    std::string reason;
+    long elapsed_ms = 0;
+    bool child_exited = false;
+    int child_status = 0;
+    bool socket_exists = false;
+    bool connect_ok = false;
+    bool ping_ok = false;
+};
+
 const char* session_health_status_name(SessionHealthStatus status);
+
+bool xtrace_debug_enabled();
 
 // Session manager - high-level session lifecycle management
 class SessionManager {
@@ -86,7 +99,8 @@ private:
     pid_t spawn_server(int session_id, const std::vector<std::string>& args);
 
     // Wait until the server responds to PING
-    bool wait_for_server(int session_id, pid_t pid);
+    WaitForServerResult wait_for_server(int session_id, pid_t pid);
+    void debug_log(const char* fmt, ...) const;
 
     bool parse_open_args(const std::vector<std::string>& design_args,
                          std::string& canonical_dbdir,

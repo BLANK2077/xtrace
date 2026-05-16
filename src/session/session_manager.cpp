@@ -1,9 +1,12 @@
 #include "session_manager.h"
+#include "../common/xtrace_paths.h"
 #include "../protocol/protocol.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
+#include <cstdarg>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
@@ -12,6 +15,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <limits.h>
+#include <fcntl.h>
 
 namespace xtrace {
 
@@ -89,6 +93,23 @@ bool protocol_version_matches(const char* sock_path) {
 }
 
 }  // namespace
+
+bool xtrace_debug_enabled() {
+    const char* env = getenv("XTRACE_DEBUG");
+    return env && env[0] != '\0' && strcmp(env, "0") != 0 &&
+           strcasecmp(env, "false") != 0 && strcasecmp(env, "off") != 0;
+}
+
+void SessionManager::debug_log(const char* fmt, ...) const {
+    if (!xtrace_debug_enabled()) return;
+    fprintf(stderr, "[xtrace-debug] ");
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "\n");
+    fflush(stderr);
+}
 
 const char* session_health_status_name(SessionHealthStatus status) {
     switch (status) {
@@ -226,24 +247,61 @@ bool SessionManager::parse_open_args(const std::vector<std::string>& design_args
     return true;
 }
 
-bool SessionManager::wait_for_server(int session_id, pid_t pid) {
+WaitForServerResult SessionManager::wait_for_server(int session_id, pid_t pid) {
+    WaitForServerResult result;
     char sock_path[SOCK_PATH_LEN];
     get_sock_path(sock_path, session_id);
 
-    for (int i = 0; i < 100; ++i) {
-        usleep(100000);  // 100ms
+    int timeout_sec = 60;
+    const char* env = getenv("XTRACE_SESSION_START_TIMEOUT_SEC");
+    if (env && *env) {
+        int v = atoi(env);
+        if (v > 0) timeout_sec = v;
+    }
+    int loops = timeout_sec * 10;
+    if (loops <= 0) loops = 600;
+    debug_log("wait_for_server: session=%d pid=%d socket=%s timeout_sec=%d",
+              session_id, pid, sock_path, timeout_sec);
 
-        if (access(sock_path, F_OK) == 0 && ping_socket_path(sock_path)) {
-            return true;
+    for (int i = 0; i < loops; ++i) {
+        usleep(100000);  // 100ms
+        result.elapsed_ms = (i + 1) * 100L;
+
+        result.socket_exists = access(sock_path, F_OK) == 0;
+        if (result.socket_exists) {
+            int fd = connect_socket_path(sock_path);
+            if (fd >= 0) {
+                result.connect_ok = true;
+                close(fd);
+                result.ping_ok = ping_socket_path(sock_path);
+                if (result.ping_ok) {
+                    result.ok = true;
+                    result.reason = "ready";
+                    debug_log("wait_for_server: socket_exists=1 connect_ok=1 ping_ok=1 elapsed_ms=%ld",
+                              result.elapsed_ms);
+                    return result;
+                }
+            }
         }
 
         int status;
         if (waitpid(pid, &status, WNOHANG) > 0) {
-            return false;
+            result.child_exited = true;
+            result.child_status = status;
+            result.reason = "child_exited";
+            debug_log("wait_for_server: child_exited status=%d elapsed_ms=%ld socket_exists=%d connect_ok=%d ping_ok=%d",
+                      status, result.elapsed_ms, result.socket_exists ? 1 : 0,
+                      result.connect_ok ? 1 : 0, result.ping_ok ? 1 : 0);
+            return result;
         }
     }
 
-    return false;
+    result.reason = result.socket_exists ? (result.connect_ok ? "ping_failed" : "socket_connect_failed")
+                                         : "timeout_waiting_socket";
+    debug_log("wait_for_server: timeout reason=%s elapsed_ms=%ld socket_exists=%d connect_ok=%d ping_ok=%d",
+              result.reason.c_str(), result.elapsed_ms, result.socket_exists ? 1 : 0,
+              result.connect_ok ? 1 : 0, result.ping_ok ? 1 : 0);
+    return result;
 }
 
 SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string>& design_args) {
@@ -252,16 +310,21 @@ SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string
     std::string canonical_dbdir;
     std::vector<std::string> canonical_args;
     if (!parse_open_args(design_args, canonical_dbdir, canonical_args)) {
+        debug_log("ensure_session: reason=invalid_args");
         result.status = "invalid_args";
         result.message = "Usage: open -dbdir <simv.daidir> [args...]";
         return result;
     }
+    debug_log("ensure_session: canonical_dbdir=%s", canonical_dbdir.c_str());
 
     // Clean up stale sessions first
+    debug_log("ensure_session: cleanup_stale_begin");
     cleanup();
+    debug_log("ensure_session: cleanup_stale_done");
 
     std::vector<SessionInfo> existing;
     registry_->load_all(existing);
+    debug_log("ensure_session: existing_sessions=%zu", existing.size());
     for (const auto& session : existing) {
         if (session.dbdir_path == canonical_dbdir &&
             diagnose_session(session.session_id).healthy &&
@@ -273,31 +336,52 @@ SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string
             result.status = "healthy";
             result.message = "Reused healthy session";
             registry_->get(session.session_id, result.info);
+            debug_log("ensure_session: reuse session=%d pid=%d socket=%s",
+                      session.session_id, session.server_pid, session.socket_path.c_str());
             return result;
         }
     }
 
     // Get next session ID
     int session_id = registry_->get_next_id();
+    if (!xtrace_ensure_session_dir(session_id)) {
+        result.status = "session_dir_failed";
+        result.message = "Failed to create session directory";
+        debug_log("ensure_session: reason=session_dir_failed session=%d", session_id);
+        return result;
+    }
+    debug_log("ensure_session: next_session_id=%d", session_id);
 
     // Spawn server process
     pid_t pid = spawn_server(session_id, canonical_args);
     if (pid < 0) {
         result.status = "spawn_failed";
         result.message = "Failed to spawn xtrace server";
+        xtrace_remove_session_dir(session_id);
+        debug_log("ensure_session: reason=spawn_failed session=%d", session_id);
         return result;
     }
+    debug_log("ensure_session: spawned_server session=%d pid=%d", session_id, pid);
 
     // Get socket path
     char sock_path[SOCK_PATH_LEN];
     get_sock_path(sock_path, session_id);
+    char dbg_path[SOCK_PATH_LEN];
+    get_debug_log_path(dbg_path, session_id);
+    debug_log("ensure_session: socket_path=%s debug_log=%s", sock_path, dbg_path);
 
-    if (!wait_for_server(session_id, pid)) {
+    WaitForServerResult wait = wait_for_server(session_id, pid);
+    if (!wait.ok) {
         // Kill the server process if it didn't start properly
         kill(pid, SIGTERM);
         unlink(sock_path);
+        xtrace_remove_session_dir(session_id);
         result.status = "startup_failed";
-        result.message = "Server did not become ready";
+        result.message = "Server did not become ready: " + wait.reason;
+        debug_log("ensure_session: reason=%s elapsed_ms=%ld child_exited=%d child_status=%d socket_exists=%d connect_ok=%d ping_ok=%d",
+                  wait.reason.c_str(), wait.elapsed_ms, wait.child_exited ? 1 : 0,
+                  wait.child_status, wait.socket_exists ? 1 : 0,
+                  wait.connect_ok ? 1 : 0, wait.ping_ok ? 1 : 0);
         return result;
     }
 
@@ -313,8 +397,11 @@ SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string
     // Add to registry
     if (!registry_->add(session)) {
         kill(pid, SIGTERM);
+        unlink(sock_path);
+        xtrace_remove_session_dir(session_id);
         result.status = "registry_failed";
         result.message = "Failed to update session registry";
+        debug_log("ensure_session: reason=registry_failed session=%d", session_id);
         return result;
     }
 
@@ -324,6 +411,7 @@ SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string
     result.status = "healthy";
     result.message = "Created healthy session";
     result.info = session;
+    debug_log("ensure_session: success session=%d pid=%d socket=%s", session_id, pid, sock_path);
     return result;
 }
 
@@ -335,8 +423,11 @@ int SessionManager::create_session(const std::vector<std::string>& design_args) 
 bool SessionManager::kill_session(int session_id) {
     SessionInfo session;
     if (!registry_->get(session_id, session)) {
+        debug_log("kill_session: registry_missing session=%d", session_id);
         return false;
     }
+    debug_log("kill_session: begin session=%d pid=%d socket=%s",
+              session.session_id, session.server_pid, session.socket_path.c_str());
 
     int fd = connect_socket_path(session.socket_path.c_str());
     if (fd < 0) {
@@ -344,7 +435,6 @@ bool SessionManager::kill_session(int session_id) {
             kill(session.server_pid, SIGTERM);
         }
         registry_->remove(session_id);
-        unlink(session.socket_path.c_str());
         return true;
     }
 
@@ -377,9 +467,6 @@ bool SessionManager::kill_session(int session_id) {
 
     // Remove from registry
     registry_->remove(session_id);
-
-    // Remove socket file
-    unlink(session.socket_path.c_str());
 
     return true;
 }
@@ -480,7 +567,9 @@ std::string SessionManager::get_socket_path(int session_id) {
 }
 
 void SessionManager::cleanup() {
+    debug_log("cleanup: begin");
     registry_->cleanup_stale();
+    debug_log("cleanup: done");
 }
 
 } // namespace xtrace

@@ -4,6 +4,7 @@
 #include "server/server.h"
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 using namespace xtrace;
@@ -12,6 +13,13 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         print_help(argv[0]);
         return 0;
+    }
+
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--debug") == 0) {
+            setenv("XTRACE_DEBUG", "1", 1);
+            break;
+        }
     }
 
     // Check for server mode first

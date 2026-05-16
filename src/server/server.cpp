@@ -1,4 +1,5 @@
 #include "server.h"
+#include "../common/xtrace_paths.h"
 #include "../protocol/protocol.h"
 #include "../trace/trace_engine.h"
 #include "../signal/signal_finder.h"
@@ -16,6 +17,8 @@
 #include <sys/un.h>
 #include <sys/stat.h>
 #include <signal.h>
+#include <cstdarg>
+#include <strings.h>
 
 #include "npi.h"
 
@@ -25,13 +28,48 @@ namespace xtrace {
 static int g_session_id = 0;
 static int g_srv_fd = -1;
 static char g_sock_path[SOCK_PATH_LEN];
+static FILE* g_debug_log = nullptr;
+
+static bool server_debug_enabled() {
+    const char* env = getenv("XTRACE_DEBUG");
+    return env && env[0] != '\0' && strcmp(env, "0") != 0 &&
+           strcasecmp(env, "false") != 0 && strcasecmp(env, "off") != 0;
+}
+
+static void server_debug_open_log() {
+    if (!server_debug_enabled() || g_session_id <= 0) return;
+    xtrace_ensure_session_dir(g_session_id);
+    char log_path[SOCK_PATH_LEN];
+    get_debug_log_path(log_path, g_session_id);
+    g_debug_log = fopen(log_path, "a");
+    if (g_debug_log) {
+        chmod(log_path, 0600);
+        fprintf(g_debug_log, "=== xtrace server debug session=%d ===\n", g_session_id);
+        fflush(g_debug_log);
+    }
+}
+
+static void server_debug_log(const char* fmt, ...) {
+    if (!g_debug_log) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_debug_log, fmt, ap);
+    va_end(ap);
+    fprintf(g_debug_log, "\n");
+    fflush(g_debug_log);
+}
 
 static void cleanup_and_exit(int sig) {
+    server_debug_log("signal_exit sig=%d", sig);
     if (g_srv_fd >= 0) {
         close(g_srv_fd);
     }
     if (strlen(g_sock_path) > 0) {
         unlink(g_sock_path);
+    }
+    if (g_debug_log) {
+        fclose(g_debug_log);
+        g_debug_log = nullptr;
     }
     // Note: npi_end not called here because signal handler context
     exit(0);
@@ -301,6 +339,8 @@ int server_main(int argc, char** argv) {
         return 1;
     }
     arg_idx++;
+    server_debug_open_log();
+    server_debug_log("server_main: parsed session_id=%d argc=%d", g_session_id, argc);
 
     // Build design args for NPI: [exe, ...design_args from arg_idx...]
     int npi_argc = argc - arg_idx + 1;
@@ -314,18 +354,24 @@ int server_main(int argc, char** argv) {
     daemonize_io();
 
     // Initialize NPI
+    server_debug_log("npi_init: begin argc=%d", npi_argc);
     int result = npi_init(npi_argc, npi_argv);
     if (result == 0) {
+        server_debug_log("npi_init: failed");
         delete[] npi_argv;
         return 1;
     }
+    server_debug_log("npi_init: ok");
 
+    server_debug_log("npi_load_design: begin");
     result = npi_load_design(npi_argc, npi_argv);
     if (result == 0) {
+        server_debug_log("npi_load_design: failed");
         npi_end();
         delete[] npi_argv;
         return 1;
     }
+    server_debug_log("npi_load_design: ok");
 
     delete[] npi_argv;
 
@@ -336,12 +382,14 @@ int server_main(int argc, char** argv) {
     // Create socket
     g_srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (g_srv_fd < 0) {
+        server_debug_log("socket: failed");
         npi_end();
         return 1;
     }
 
     get_sock_path(g_sock_path, g_session_id);
     unlink(g_sock_path);
+    server_debug_log("socket_path: %s", g_sock_path);
 
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
@@ -349,18 +397,22 @@ int server_main(int argc, char** argv) {
     strncpy(addr.sun_path, g_sock_path, sizeof(addr.sun_path) - 1);
 
     if (bind(g_srv_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        server_debug_log("bind: failed path=%s", g_sock_path);
         close(g_srv_fd);
         npi_end();
         return 1;
     }
     chmod(g_sock_path, 0600);
+    server_debug_log("bind: ok");
 
     if (listen(g_srv_fd, 8) < 0) {
+        server_debug_log("listen: failed");
         close(g_srv_fd);
         unlink(g_sock_path);
         npi_end();
         return 1;
     }
+    server_debug_log("listen: ok");
 
     // Accept loop
     while (true) {
@@ -375,9 +427,15 @@ int server_main(int argc, char** argv) {
     }
 
     // Cleanup
+    server_debug_log("normal_exit: cleanup begin");
     close(g_srv_fd);
     unlink(g_sock_path);
     npi_end();
+    server_debug_log("normal_exit: cleanup done");
+    if (g_debug_log) {
+        fclose(g_debug_log);
+        g_debug_log = nullptr;
+    }
 
     return 0;
 }

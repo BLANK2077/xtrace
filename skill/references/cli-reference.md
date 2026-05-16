@@ -59,8 +59,24 @@ tools/xtrace-env session kill all
 - daidir 路径必须存在、必须是目录、且必须以 `.daidir` 结尾。
 - 再次打开同一个 daidir 时，xtrace 会复用已有健康 session。
 - `session ensure -dbdir <*.daidir> [-json]` 更适合脚本：健康则复用，不存在则创建，JSON 输出包含 `ok/session_id/status/reused/dbdir_path/message`。
-- `session doctor -s <sid> [-json]` 是判断 session 是否可用的首选命令。
+- `session doctor -s <sid> [-json] [--debug]` 是判断 session 是否可用的首选命令。
+- `--debug` 或 `XTRACE_DEBUG=1` 会把 session 生命周期诊断打印到 stderr；server 启动日志位于 `~/.xtrace/sessions/<sid>/debug.log`。
 - 常见状态包括：`healthy`、`registry_missing`、`dbdir_missing`、`dbdir_changed`、`process_exited`、`socket_missing`、`connect_failed`、`ping_failed`。
+
+维护文件统一放在 `~/.xtrace/`：
+
+```text
+~/.xtrace/
+├── registry.json
+├── registry.lock
+└── sessions/
+    └── <sid>/
+        ├── session.json
+        ├── socket
+        └── debug.log
+```
+
+新版只写上述 JSON/目录布局。旧版顶层 `~/.xtrace.registry` 仅作为兼容迁移输入读取，不会删除。
 
 ## Trace 输出
 

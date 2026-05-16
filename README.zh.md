@@ -85,6 +85,7 @@ tools/xtrace-env session list
 # 诊断指定 Session
 tools/xtrace-env session doctor -s 1
 tools/xtrace-env session doctor -s 1 -json
+tools/xtrace-env session doctor -s 1 --debug
 
 # 关闭指定 Session
 tools/xtrace-env session kill 1
@@ -95,6 +96,8 @@ tools/xtrace-env session kill all
 # 关闭最新 Session
 tools/xtrace-env close
 ```
+
+Session 创建或健康检查失败时，可使用 `--debug` 或 `XTRACE_DEBUG=1`。debug 诊断会写入 stderr，server 侧启动细节写入 `~/.xtrace/sessions/<sid>/debug.log`。
 
 ### 信号追踪
 
@@ -216,6 +219,23 @@ rg -n "ready" /path/to/rtl
 - `connect_failed` — socket 存在但无法连接
 - `ping_failed` — server 未响应 `PING`
 - `healthy` — registry、进程、socket、连接和 `PING/PONG` 均正常
+
+### 运行期文件
+
+xtrace 的运行期状态统一放在 `~/.xtrace/`：
+
+```text
+~/.xtrace/
+├── registry.json
+├── registry.lock
+└── sessions/
+    └── <sid>/
+        ├── session.json
+        ├── socket
+        └── debug.log
+```
+
+新版本只写入上述 JSON/目录布局。旧版顶层 `~/.xtrace.registry` 会在 `registry.json` 不存在时作为兼容输入读取一次，不会删除。
 
 ## 项目结构
 

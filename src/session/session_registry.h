@@ -69,17 +69,16 @@ public:
     bool clear_all();
 
 private:
-    char registry_path_[256];
+    std::string registry_path_;
 
     // File locking for concurrent access
     bool lock_file(int fd);
     bool unlock_file(int fd);
 
-    // Parse a single line from registry file
-    bool parse_line(const char* line, SessionInfo& session);
-
-    // Serialize session to string
-    std::string serialize(const SessionInfo& session);
+    bool parse_legacy_line(const char* line, SessionInfo& session);
+    bool load_legacy(std::vector<SessionInfo>& sessions);
+    bool save_all(const std::vector<SessionInfo>& sessions);
+    bool write_session_file(const SessionInfo& session);
 };
 
 } // namespace xtrace

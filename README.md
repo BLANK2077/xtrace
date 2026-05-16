@@ -88,6 +88,7 @@ tools/xtrace-env session list
 # Diagnose a session.
 tools/xtrace-env session doctor -s 1
 tools/xtrace-env session doctor -s 1 -json
+tools/xtrace-env session doctor -s 1 --debug
 
 # Kill a specific session.
 tools/xtrace-env session kill 1
@@ -98,6 +99,8 @@ tools/xtrace-env session kill all
 # Close the latest session.
 tools/xtrace-env close
 ```
+
+Use `--debug` or `XTRACE_DEBUG=1` when session creation or health checks fail. Debug diagnostics are printed to stderr, and server-side startup details are written to `~/.xtrace/sessions/<sid>/debug.log`.
 
 ### Signal Tracing
 
@@ -219,6 +222,23 @@ Status values:
 - `connect_failed`: the socket exists but cannot be connected.
 - `ping_failed`: the server did not respond to `PING`.
 - `healthy`: registry, process, socket, connect, and `PING/PONG` checks all passed.
+
+### Runtime Files
+
+xtrace stores runtime state under `~/.xtrace/`:
+
+```text
+~/.xtrace/
+├── registry.json
+├── registry.lock
+└── sessions/
+    └── <sid>/
+        ├── session.json
+        ├── socket
+        └── debug.log
+```
+
+New writes use this JSON layout only. Older top-level `~/.xtrace.registry` files are read once for compatibility when `registry.json` is missing; they are not deleted.
 
 ## Project Layout
 

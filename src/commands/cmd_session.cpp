@@ -33,15 +33,20 @@ static bool has_json_arg(int argc, char** argv) {
     return false;
 }
 
+static bool is_debug_arg(const char* arg) {
+    return strcmp(arg, "--debug") == 0;
+}
+
 void print_help(const char* prog) {
     printf("XTrace - NPI-based Signal Tracing Tool\n\n");
     printf("Usage:\n");
     printf("  %s open -dbdir <simv.daidir> [args...]  Load design and create new session\n", prog);
+    printf("  %s open -dbdir <simv.daidir> --debug  Print session startup diagnostics\n", prog);
     printf("  %s session list        List all active sessions\n", prog);
     printf("  %s session ensure -dbdir <simv.daidir> [-json] [args...]  Ensure healthy session\n", prog);
     printf("  %s session kill <id>   Kill a specific session\n", prog);
     printf("  %s session kill all    Kill all sessions\n", prog);
-    printf("  %s session doctor -s <sid> [-json]  Diagnose a session\n", prog);
+    printf("  %s session doctor -s <sid> [-json] [--debug]  Diagnose a session\n", prog);
     printf("  %s driver <sig> [-s <sid>] [-json]  Trace signal drivers\n", prog);
     printf("  %s load   <sig> [-s <sid>] [-json]  Trace signal loads\n", prog);
     printf("  %s signal resolve <signal> -s <sid> [-json]\n", prog);
@@ -55,6 +60,9 @@ void print_help(const char* prog) {
     printf("  %s ai query --json '{\"api_version\":\"xtrace.ai.v1\",\"action\":\"trace.driver\",...}'\n", prog);
     printf("  %s session list\n", prog);
     printf("  %s session kill 1\n", prog);
+    printf("\nDebug:\n");
+    printf("  Use --debug or XTRACE_DEBUG=1 to print session lifecycle diagnostics to stderr.\n");
+    printf("  Server debug logs are written to ~/.xtrace/sessions/<sid>/debug.log.\n");
 }
 
 int cmd_open(int argc, char** argv) {
@@ -66,6 +74,7 @@ int cmd_open(int argc, char** argv) {
     // Collect design args (skip "open")
     std::vector<std::string> design_args;
     for (int i = 2; i < argc; i++) {
+        if (is_debug_arg(argv[i])) continue;
         design_args.push_back(argv[i]);
     }
 
@@ -87,6 +96,8 @@ int cmd_session_ensure(int argc, char** argv) {
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-json") == 0) {
+            continue;
+        } else if (is_debug_arg(argv[i])) {
             continue;
         } else {
             design_args.push_back(argv[i]);
@@ -200,14 +211,16 @@ int cmd_session_doctor(int argc, char** argv) {
             session_id = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-json") == 0) {
             json_output = true;
+        } else if (is_debug_arg(argv[i])) {
+            continue;
         } else {
-            fprintf(stderr, "Usage: %s session doctor -s <sid> [-json]\n", argv[0]);
+            fprintf(stderr, "Usage: %s session doctor -s <sid> [-json] [--debug]\n", argv[0]);
             return 1;
         }
     }
 
     if (session_id <= 0) {
-        fprintf(stderr, "Usage: %s session doctor -s <sid> [-json]\n", argv[0]);
+        fprintf(stderr, "Usage: %s session doctor -s <sid> [-json] [--debug]\n", argv[0]);
         fprintf(stderr, "Error: session doctor requires -s <sid>\n");
         return 1;
     }
