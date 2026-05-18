@@ -1,3 +1,8 @@
+
+## Named Session Rule
+
+XTrace sessions must be explicitly named. For AI JSON, create sessions with `args.name` and use the same string in `target.session_id`; do not rely on numeric or implicit latest sessions. CLI startup uses `--name <name>` or `-n <name>`, and later commands use `-s <name>`. Session names may contain letters, digits, `_`, `-`, and `.`, up to 256 characters. Duplicate names fail with `session_id_exists`; choose a case-specific name such as `case_a` or `debug_ready_low`.
+
 ---
 name: xtrace
 description: >
@@ -35,7 +40,7 @@ tools/xtrace-env ai query --json '{"api_version":"xtrace.ai.v1","action":"trace.
 For larger summaries, keep the xtrace query bounded and do aggregation in Python:
 
 ```bash
-tools/xtrace-env ai query --json '{"api_version":"xtrace.ai.v1","action":"trace.expand","target":{"session_id":1},"args":{"root_signal":"top.u_dut.ready","direction":"driver"},"limits":{"max_depth":3,"max_results":50}}' \
+tools/xtrace-env ai query --json '{"api_version":"xtrace.ai.v1","action":"trace.expand","target":{"session_id":"case_a"},"args":{"root_signal":"top.u_dut.ready","direction":"driver"},"limits":{"max_depth":3,"max_results":50}}' \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); g=d.get("data",{}).get("graph",{}); print(len(g.get("nodes",[])), len(g.get("edges",[])))'
 ```
 
@@ -76,7 +81,7 @@ ok/action/tool/session/summary/data/findings/suggested_next_actions/warnings/err
 Only the top-level response envelope is stable across all actions. Field names inside `summary`, `data`, and `findings` are action-specific and may differ by action. Do not guess detailed keys from memory. For a field dictionary and extraction guidance, see [references/ai-response-dictionary.md](references/ai-response-dictionary.md). For exact fields on a specific build and daidir, run `tools/xtrace-env ai schema` when available, or issue a small bounded query and inspect the returned JSON before writing extraction code.
 
 AI usage rules:
-- Start with `session.ensure` for repeated work, then use `target.session_id`.
+- Start with `session.ensure` for repeated work, then use `target.session_id` as a string session name.
 - For one-shot queries, use `target.dbdir + auto_ensure:true`.
 - Always inspect `ok` and `error.code`; do not parse human text.
 - Prefer `python3 -c 'import json,sys; ...'` pipelines for extracting fields or computing statistics from `xtrace ai query` output.
@@ -85,8 +90,8 @@ AI usage rules:
 - Use external `rg`/grep on RTL source to discover candidate names; xtrace only resolves exact paths.
 - Use `limits.max_results/max_depth/max_paths` for graph and broad trace actions.
 - Use `batch` for multi-step debug plans to reduce repeated session setup.
-- Runtime state lives under `~/.xtrace/`: `registry.json`, `registry.lock`, and `sessions/<sid>/session.json`, `socket`, `debug.log`. Older top-level `~/.xtrace.registry` is a legacy migration input only.
-- For session startup failures, rerun with `--debug` or `XTRACE_DEBUG=1` and inspect `~/.xtrace/sessions/<sid>/debug.log`.
+- Runtime state lives under `~/.xtrace/`: `registry.json`, `registry.lock`, and `sessions/<name>/session.json`, `socket`, `debug.log`. Older top-level `~/.xtrace.registry` is a legacy migration input only.
+- For session startup failures, rerun with `--debug` or `XTRACE_DEBUG=1` and inspect `~/.xtrace/sessions/<name>/debug.log`.
 
 ## Session Actions
 
@@ -100,7 +105,7 @@ Open a daidir-backed session. Use `session.ensure` for most agent flows unless y
 
 ### `session.ensure`
 
-Open or reuse a healthy session. Use this once at the start of a multi-step trace.
+Create a named session. Use this once at the start of a multi-step trace; duplicate names fail.
 
 ```json
 {"api_version":"xtrace.ai.v1","action":"session.ensure","target":{"dbdir":"/path/to/simv.daidir"}}
@@ -108,7 +113,7 @@ Open or reuse a healthy session. Use this once at the start of a multi-step trac
 
 ### `session.list`
 
-List known sessions. Use before reusing an existing session.
+List known sessions. Use before choosing or killing a named session.
 
 ```json
 {"api_version":"xtrace.ai.v1","action":"session.list"}
@@ -119,7 +124,7 @@ List known sessions. Use before reusing an existing session.
 Check registry, daemon, socket, and daidir health.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"session.doctor","target":{"session_id":1}}
+{"api_version":"xtrace.ai.v1","action":"session.doctor","target":{"session_id":"case_a"}}
 ```
 
 ### `session.kill`
@@ -135,7 +140,7 @@ Stop one session or all sessions.
 Close a session alias; use when the action model calls for close rather than kill.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"session.close","target":{"session_id":1}}
+{"api_version":"xtrace.ai.v1","action":"session.close","target":{"session_id":"case_a"}}
 ```
 
 ## Trace Actions
@@ -145,7 +150,7 @@ Close a session alias; use when the action model calls for close rather than kil
 Find RTL drivers for one signal. Use for root-cause candidates such as why `ready` is low.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"trace.driver","target":{"session_id":1},"args":{"signal":"top.u_dut.ready","no_statement_only":true},"limits":{"max_results":20},"output":{"include_expr":true,"include_source":true}}
+{"api_version":"xtrace.ai.v1","action":"trace.driver","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.ready","no_statement_only":true},"limits":{"max_results":20},"output":{"include_expr":true,"include_source":true}}
 ```
 
 ### `trace.load`
@@ -153,7 +158,7 @@ Find RTL drivers for one signal. Use for root-cause candidates such as why `read
 Find RTL loads or uses of one signal. Use for fanout impact and where a signal is consumed.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"trace.load","target":{"session_id":1},"args":{"signal":"top.u_dut.valid","role":"rhs_use"},"limits":{"max_results":20}}
+{"api_version":"xtrace.ai.v1","action":"trace.load","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.valid","role":"rhs_use"},"limits":{"max_results":20}}
 ```
 
 ### `trace.query`
@@ -161,7 +166,7 @@ Find RTL loads or uses of one signal. Use for fanout impact and where a signal i
 Mode-selecting wrapper for driver/load. Use when an agent has a variable direction.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"trace.query","target":{"session_id":1},"args":{"mode":"driver","signal":"top.u_dut.ready"},"limits":{"max_results":20}}
+{"api_version":"xtrace.ai.v1","action":"trace.query","target":{"session_id":"case_a"},"args":{"mode":"driver","signal":"top.u_dut.ready"},"limits":{"max_results":20}}
 ```
 
 ## Signal Actions
@@ -171,7 +176,7 @@ Mode-selecting wrapper for driver/load. Use when an agent has a variable directi
 Resolve an exact or near-exact signal path.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"signal.resolve","target":{"session_id":1},"args":{"signal":"top.u_dut.ready"}}
+{"api_version":"xtrace.ai.v1","action":"signal.resolve","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.ready"}}
 ```
 
 ### `signal.canonicalize`
@@ -179,7 +184,7 @@ Resolve an exact or near-exact signal path.
 Normalize a signal into canonical path metadata, select/array hints, aliases, and ambiguity information.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"signal.canonicalize","target":{"session_id":1},"args":{"signal":"ready"},"limits":{"max_results":20}}
+{"api_version":"xtrace.ai.v1","action":"signal.canonicalize","target":{"session_id":"case_a"},"args":{"signal":"ready"},"limits":{"max_results":20}}
 ```
 
 ## Graph And Explanation Actions
@@ -189,7 +194,7 @@ Normalize a signal into canonical path metadata, select/array hints, aliases, an
 Recursively expand driver/load causality from a root signal. Use strict limits.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"trace.expand","target":{"session_id":1},"args":{"root_signal":"top.u_dut.ready","direction":"driver","dependency_types":["data","control"]},"limits":{"max_depth":3,"max_results":80}}
+{"api_version":"xtrace.ai.v1","action":"trace.expand","target":{"session_id":"case_a"},"args":{"root_signal":"top.u_dut.ready","direction":"driver","dependency_types":["data","control"]},"limits":{"max_depth":3,"max_results":80}}
 ```
 
 ### `trace.graph`
@@ -197,7 +202,7 @@ Recursively expand driver/load causality from a root signal. Use strict limits.
 Return graph-shaped causality data for a root signal.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"trace.graph","target":{"session_id":1},"args":{"root_signal":"top.u_dut.ready","direction":"driver"},"limits":{"max_depth":3,"max_results":80}}
+{"api_version":"xtrace.ai.v1","action":"trace.graph","target":{"session_id":"case_a"},"args":{"root_signal":"top.u_dut.ready","direction":"driver"},"limits":{"max_depth":3,"max_results":80}}
 ```
 
 ### `trace.path`
@@ -205,7 +210,7 @@ Return graph-shaped causality data for a root signal.
 Check whether a causality path exists between two signals.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"trace.path","target":{"session_id":1},"args":{"from_signal":"top.u_dut.fifo_full","to_signal":"top.u_dut.ready","dependency_types":["data","control"]},"limits":{"max_depth":5,"max_paths":10}}
+{"api_version":"xtrace.ai.v1","action":"trace.path","target":{"session_id":"case_a"},"args":{"from_signal":"top.u_dut.fifo_full","to_signal":"top.u_dut.ready","dependency_types":["data","control"]},"limits":{"max_depth":5,"max_paths":10}}
 ```
 
 ### `trace.explain`
@@ -213,7 +218,7 @@ Check whether a causality path exists between two signals.
 Produce a compact AI-facing causality explanation and suggested waveform verification steps.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"trace.explain","target":{"session_id":1},"args":{"signal":"top.u_dut.ready","mode":"why_can_change","direction":"driver"},"limits":{"max_depth":3,"max_results":20}}
+{"api_version":"xtrace.ai.v1","action":"trace.explain","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.ready","mode":"why_can_change","direction":"driver"},"limits":{"max_depth":3,"max_results":20}}
 ```
 
 ### `control.explain`
@@ -221,7 +226,7 @@ Produce a compact AI-facing causality explanation and suggested waveform verific
 Explain if/case/default control dependencies for a target signal.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"control.explain","target":{"session_id":1},"args":{"signal":"top.u_dut.ready","include_nested":true},"limits":{"max_results":20}}
+{"api_version":"xtrace.ai.v1","action":"control.explain","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.ready","include_nested":true},"limits":{"max_results":20}}
 ```
 
 ### `source.context`
@@ -239,7 +244,7 @@ Return source lines around a file/line and infer the enclosing module/always/if/
 Normalize an expression to an AST. Prefer `args.signal` so xtrace can use the real NPI assignment; `args.expr` is a low-confidence string fallback.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"expr.normalize","target":{"session_id":1},"args":{"signal":"top.u_dut.ready"}}
+{"api_version":"xtrace.ai.v1","action":"expr.normalize","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.ready"}}
 ```
 
 ```json
@@ -251,7 +256,7 @@ Normalize an expression to an AST. Prefer `args.signal` so xtrace can use the re
 Extract procedural assignments for a target signal, including default assignments, branch assignments, active conditions, source location, and dependency edges.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"procedural.assignment","target":{"session_id":1},"args":{"signal":"top.u_dut.ready"},"limits":{"max_results":50}}
+{"api_version":"xtrace.ai.v1","action":"procedural.assignment","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.ready"},"limits":{"max_results":50}}
 ```
 
 ### `sequential.update`
@@ -259,7 +264,7 @@ Extract procedural assignments for a target signal, including default assignment
 Explain register update rules, including clock/reset hints and reset/increment/decrement/hold/update classifications.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"sequential.update","target":{"session_id":1},"args":{"signal":"top.u_dut.count"},"limits":{"max_results":50}}
+{"api_version":"xtrace.ai.v1","action":"sequential.update","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.count"},"limits":{"max_results":50}}
 ```
 
 ### `fsm.explain`
@@ -267,7 +272,7 @@ Explain register update rules, including clock/reset hints and reset/increment/d
 Explain state register transitions and condition/source evidence.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"fsm.explain","target":{"session_id":1},"args":{"signal":"top.u_dut.state_q"},"limits":{"max_results":50}}
+{"api_version":"xtrace.ai.v1","action":"fsm.explain","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.state_q"},"limits":{"max_results":50}}
 ```
 
 ### `counter.explain`
@@ -275,7 +280,7 @@ Explain state register transitions and condition/source evidence.
 Explain counter-like update rules and whether the target appears counter-like.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"counter.explain","target":{"session_id":1},"args":{"signal":"top.u_dut.active_count"},"limits":{"max_results":50}}
+{"api_version":"xtrace.ai.v1","action":"counter.explain","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.active_count"},"limits":{"max_results":50}}
 ```
 
 ## Port And Interface Actions
@@ -285,7 +290,7 @@ Explain counter-like update rules and whether the target appears counter-like.
 Trace formal/actual highconn/lowconn connection chains for a signal or port.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"port.trace","target":{"session_id":1},"args":{"signal":"top.u_mid.u_leaf.out"},"limits":{"max_depth":5,"max_results":50}}
+{"api_version":"xtrace.ai.v1","action":"port.trace","target":{"session_id":"case_a"},"args":{"signal":"top.u_mid.u_leaf.out"},"limits":{"max_depth":5,"max_results":50}}
 ```
 
 ### `instance.map`
@@ -293,7 +298,7 @@ Trace formal/actual highconn/lowconn connection chains for a signal or port.
 Return instance-to-module and port mapping information.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"instance.map","target":{"session_id":1},"args":{"instance":"top.u_mid.u_leaf"},"limits":{"max_results":100}}
+{"api_version":"xtrace.ai.v1","action":"instance.map","target":{"session_id":"case_a"},"args":{"instance":"top.u_mid.u_leaf"},"limits":{"max_results":100}}
 ```
 
 ### `interface.resolve`
@@ -301,7 +306,7 @@ Return instance-to-module and port mapping information.
 Resolve interface/modport/member relationships, including pass-through and member select hints when available.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"interface.resolve","target":{"session_id":1},"args":{"signal":"top.if0.valid"},"limits":{"max_results":50}}
+{"api_version":"xtrace.ai.v1","action":"interface.resolve","target":{"session_id":"case_a"},"args":{"signal":"top.if0.valid"},"limits":{"max_results":50}}
 ```
 
 ## Batch Action
@@ -311,5 +316,5 @@ Resolve interface/modport/member relationships, including pass-through and membe
 Run multiple AI requests in one ordered call. Use `continue_on_error` for debug plans where later recovery steps can still be useful.
 
 ```json
-{"api_version":"xtrace.ai.v1","action":"batch","target":{"session_id":1},"args":{"mode":"continue_on_error","requests":[{"action":"trace.driver","args":{"signal":"top.u_dut.ready"}},{"action":"trace.driver","args":{"signal":"top.u_dut.fifo_full"}}]}}
+{"api_version":"xtrace.ai.v1","action":"batch","target":{"session_id":"case_a"},"args":{"mode":"continue_on_error","requests":[{"action":"trace.driver","args":{"signal":"top.u_dut.ready"}},{"action":"trace.driver","args":{"signal":"top.u_dut.fifo_full"}}]}}
 ```

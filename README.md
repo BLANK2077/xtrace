@@ -11,11 +11,11 @@ XTrace is a Synopsys NPI (Native Programming Interface) based signal tracing CLI
 - **Concurrent sessions**: manage multiple design databases, with each session loading one database independently.
 - **Automatic session IDs**: no manual ID allocation is required.
 - **Session lifecycle management**: create (`open`), list (`session list`), and close (`session kill` / `close`) sessions.
-- **Agent-friendly entry points**: `session ensure -dbdir ... [-json]` reuses or creates a healthy session, and `query` combines ensure + trace in one command.
+- **Agent-friendly entry points**: `session ensure -dbdir ... --name <name> [-json]` creates a named session, and `query --name <name>` combines startup + trace in one command.
 - **Stale session cleanup**: detects and removes abnormal server sessions.
-- **Session health diagnostics**: `session doctor -s <sid> [-json]` distinguishes registry, process, socket, connect, and PING failures.
+- **Session health diagnostics**: `session doctor -s <name> [-json]` distinguishes registry, process, socket, connect, and PING failures.
 - **Daidir fingerprint checking**: `open` only accepts `-dbdir <*.daidir>` and records canonical path, mtime, size, dev, and inode.
-- **Targeted commands**: use `-s <session_id>` to send commands to a specific session.
+- **Targeted commands**: use `-s <name>` to send commands to a specific session.
 
 ### Signal Tracing (Driver / Load)
 
@@ -39,7 +39,7 @@ XTrace uses a local daemon per session. The daemon is reached through a Unix dom
 In chip-company LSF environments, avoid submitting XTrace commands to a normal queue that may dispatch each command to a different host. The recommended setup is to ask IT to create a dedicated queue that contains exactly one suitable machine for XTrace/XWave-style NPI tools. Then submit all XTrace commands to that queue:
 
 ```bash
-bsub -q <xtrace_queue> -I "cd <workdir> && tools/xtrace-env session ensure -dbdir /path/to/simv.daidir -json"
+bsub -q <xtrace_queue> -I "cd <workdir> && tools/xtrace-env session ensure -dbdir /path/to/simv.daidir --name case_a -json"
 bsub -q <xtrace_queue> -I "cd <workdir> && tools/xtrace-env query -dbdir /path/to/simv.daidir --driver top.sig -json"
 bsub -q <xtrace_queue> -I "cd <workdir> && tools/xtrace-env session kill 1"
 ```
@@ -76,19 +76,19 @@ tools/xtrace-env help
 
 ```bash
 # Create a new session by loading a VCS daidir.
-tools/xtrace-env open -dbdir /path/to/simv.daidir
+tools/xtrace-env open -dbdir /path/to/simv.daidir --name case_a
 [Session 1] Database loaded.
 
 # Ensure a healthy session for the same daidir. This is recommended for scripts and agents.
-tools/xtrace-env session ensure -dbdir /path/to/simv.daidir -json
+tools/xtrace-env session ensure -dbdir /path/to/simv.daidir --name case_a -json
 
 # List all sessions.
 tools/xtrace-env session list
 
 # Diagnose a session.
-tools/xtrace-env session doctor -s 1
-tools/xtrace-env session doctor -s 1 -json
-tools/xtrace-env session doctor -s 1 --debug
+tools/xtrace-env session doctor -s case_a
+tools/xtrace-env session doctor -s case_a -json
+tools/xtrace-env session doctor -s case_a --debug
 
 # Kill a specific session.
 tools/xtrace-env session kill 1
@@ -100,22 +100,22 @@ tools/xtrace-env session kill all
 tools/xtrace-env close
 ```
 
-Use `--debug` or `XTRACE_DEBUG=1` when session creation or health checks fail. Debug diagnostics are printed to stderr, and server-side startup details are written to `~/.xtrace/sessions/<sid>/debug.log`.
+Use `--debug` or `XTRACE_DEBUG=1` when session creation or health checks fail. Debug diagnostics are printed to stderr, and server-side startup details are written to `~/.xtrace/sessions/<hashed-name>/debug.log`.
 
 ### Signal Tracing
 
 ```bash
 # Trace drivers.
-tools/xtrace-env driver test_top.uut.bus.ready -s 1
-tools/xtrace-env driver test_top.uut.bus.ready -s 1 -json
+tools/xtrace-env driver test_top.uut.bus.ready -s case_a
+tools/xtrace-env driver test_top.uut.bus.ready -s case_a -json
 
 # Trace loads.
-tools/xtrace-env load test_top.valid_in -s 1
-tools/xtrace-env load test_top.valid_in -s 1 -json
+tools/xtrace-env load test_top.valid_in -s case_a
+tools/xtrace-env load test_top.valid_in -s case_a -json
 
 # Filter trace results.
-tools/xtrace-env driver test_top.uut.bus.ready -s 1 -json --limit 5
-tools/xtrace-env load test_top.valid_in -s 1 -json --role rhs_use --no-statement-only
+tools/xtrace-env driver test_top.uut.bus.ready -s case_a -json --limit 5
+tools/xtrace-env load test_top.valid_in -s case_a -json --role rhs_use --no-statement-only
 ```
 
 `driver/load -json` uses the same trace engine as text output. A typical JSON payload is:
@@ -195,7 +195,7 @@ When NPI cannot expose a complete expression or block structure, the AI action s
 
 ```bash
 # Resolve a full signal name.
-tools/xtrace-env signal resolve test_top.uut.bus.ready -s 1 -json
+tools/xtrace-env signal resolve test_top.uut.bus.ready -s case_a -json
 
 # Use source grep to discover candidates, then resolve the exact path.
 rg -n "ready" /path/to/rtl
@@ -209,8 +209,8 @@ rg -n "ready" /path/to/rtl
 
 - Healthy sessions return `0` with status `healthy`.
 - Unhealthy sessions return non-zero.
-- Missing `-s <sid>` or invalid session IDs return non-zero.
-- JSON output includes `session_id`, `healthy`, `status`, `message`, `pid`, `socket_path`, `design_file`, `dbdir_path`, and daidir metadata.
+- Missing `-s <name>` or invalid session names return non-zero.
+- JSON output includes string `id`/`session_id`, `healthy`, `status`, `message`, `pid`, `socket_path`, `design_file`, `dbdir_path`, and daidir metadata.
 
 Status values:
 

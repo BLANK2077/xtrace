@@ -33,7 +33,7 @@ tools/xtrace-env ai query --json '<request>' \
 | `ok` | Boolean success flag. | Check before reading action data. |
 | `action` | Echoed action name. | Verify the response matches the request. |
 | `tool` | Tool metadata. | Preserve in reports. |
-| `session` | Session metadata when relevant. | Capture `id`, `dbdir`, `reused`, and health hints for follow-up requests. |
+| `session` | Session metadata when relevant. | Capture `id`, `dbdir`, and health hints for follow-up requests. |
 | `summary` | Compact action-specific summary. | Good for quick decisions and user-facing summaries. |
 | `data` | Action-specific structured payload. | Use for evidence extraction and graph/path processing. |
 | `findings` | List of detected facts or issues. | Use for trace/explain conclusions. |
@@ -119,7 +119,6 @@ session.open/session.ensure/session.list/session.doctor/session.kill/session.clo
 Common payloads:
 - `session.id`
 - `session.dbdir`
-- `session.reused`
 - `summary.count`
 - `summary.healthy`
 - `data.sessions`
@@ -154,7 +153,7 @@ Common payloads:
 Extraction example:
 
 ```bash
-tools/xtrace-env ai query --json '{"api_version":"xtrace.ai.v1","action":"trace.driver","target":{"session_id":1},"args":{"signal":"top.u_dut.ready"},"limits":{"max_results":20}}' \
+tools/xtrace-env ai query --json '{"api_version":"xtrace.ai.v1","action":"trace.driver","target":{"session_id":"case_a"},"args":{"signal":"top.u_dut.ready"},"limits":{"max_results":20}}' \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("data",{}).get("rhs_signals",[]))'
 ```
 

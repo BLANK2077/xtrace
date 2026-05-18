@@ -15,20 +15,20 @@ namespace xtrace {
 using json = nlohmann::json;
 
 static void print_json_error(const char* command_name,
-                             int session_id,
+                             const std::string& session_id,
                              const char* status,
                              const std::string& message) {
     json payload = {
         {"ok", false},
         {"command", command_name ? command_name : ""},
-        {"session_id", session_id},
+        {"session_id", session_id}, {"id", session_id},
         {"status", status ? status : "error"},
         {"message", message}
     };
     fprintf(stderr, "%s\n", payload.dump(2).c_str());
 }
 
-int session_connect(int session_id) {
+int session_connect(const std::string& session_id) {
     char sock_path[SOCK_PATH_LEN];
     get_sock_path(sock_path, session_id);
 
@@ -47,11 +47,11 @@ int session_connect(int session_id) {
     return fd;
 }
 
-bool send_command_and_print(int session_id, const char* cmd) {
+bool send_command_and_print(const std::string& session_id, const char* cmd) {
     return send_command_and_print_ex(session_id, cmd, false, "");
 }
 
-bool send_command_and_print_ex(int session_id, const char* cmd, bool json_errors, const char* command_name) {
+bool send_command_and_print_ex(const std::string& session_id, const char* cmd, bool json_errors, const char* command_name) {
     SessionManager manager;
     int fd = session_connect(session_id);
     if (fd < 0) {
@@ -60,8 +60,8 @@ bool send_command_and_print_ex(int session_id, const char* cmd, bool json_errors
         if (json_errors) {
             print_json_error(command_name, session_id, status, health.message);
         } else {
-            fprintf(stderr, "Error: Session %d unavailable: %s (status=%s)\n",
-                    session_id,
+            fprintf(stderr, "Error: Session %s unavailable: %s (status=%s)\n",
+                    session_id.c_str(),
                     health.message.c_str(),
                     status);
         }
@@ -118,7 +118,7 @@ bool send_command_and_print_ex(int session_id, const char* cmd, bool json_errors
     return saw_end_marker && !server_error;
 }
 
-bool send_command_capture(int session_id,
+bool send_command_capture(const std::string& session_id,
                           const char* cmd,
                           std::string& payload,
                           std::string& status,
@@ -174,7 +174,7 @@ bool send_command_capture(int session_id,
     return true;
 }
 
-bool session_ping(int session_id) {
+bool session_ping(const std::string& session_id) {
     int fd = session_connect(session_id);
     if (fd < 0) return false;
 

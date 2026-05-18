@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <sys/file.h>
 #include <sstream>
+#include <cctype>
 
 namespace xtrace {
 
@@ -49,7 +50,12 @@ static json session_to_json(const SessionInfo& session) {
 
 static bool json_to_session(const json& j, SessionInfo& session) {
     if (!j.is_object()) return false;
-    session.session_id = j.value("session_id", 0);
+    if (j.contains("session_id")) {
+        if (j["session_id"].is_string()) session.session_id = j["session_id"].get<std::string>();
+        else if (j["session_id"].is_number_integer()) session.session_id = std::to_string(j["session_id"].get<int>());
+    } else {
+        session.session_id.clear();
+    }
     session.socket_path = j.value("socket_path", "");
     session.design_file = j.value("design_file", "");
     session.dbdir_path = j.value("dbdir_path", "");
@@ -60,12 +66,12 @@ static bool json_to_session(const json& j, SessionInfo& session) {
     session.dbdir_size = j.value("dbdir_size", 0LL);
     session.dbdir_dev = j.value("dbdir_dev", 0ULL);
     session.dbdir_inode = j.value("dbdir_inode", 0ULL);
-    if (session.socket_path.empty() && session.session_id > 0) {
+    if (session.socket_path.empty() && !session.session_id.empty()) {
         session.socket_path = xtrace_socket_path(session.session_id);
     }
     if (session.dbdir_path.empty()) session.dbdir_path = session.design_file;
     if (session.design_file.empty()) session.design_file = session.dbdir_path;
-    return session.session_id > 0 && !session.dbdir_path.empty();
+    return !session.session_id.empty() && !session.dbdir_path.empty();
 }
 
 bool SessionRegistry::parse_legacy_line(const char* line, SessionInfo& session) {
@@ -80,9 +86,8 @@ bool SessionRegistry::parse_legacy_line(const char* line, SessionInfo& session) 
 
     if (fields.size() != 5 && fields.size() != 6 && fields.size() != 11) return false;
 
+    session.session_id = fields[0];
     char* end = nullptr;
-    session.session_id = strtol(fields[0].c_str(), &end, 10);
-    if (!end || *end != '\0') return false;
     session.socket_path = xtrace_socket_path(session.session_id);
     session.design_file = fields[2];
     session.server_pid = strtol(fields[3].c_str(), &end, 10);
@@ -111,7 +116,7 @@ bool SessionRegistry::parse_legacy_line(const char* line, SessionInfo& session) 
     }
 
     if (session.design_file.empty()) session.design_file = session.dbdir_path;
-    return session.session_id > 0;
+    return !session.session_id.empty();
 }
 
 bool SessionRegistry::load_legacy(std::vector<SessionInfo>& sessions) {
@@ -210,6 +215,9 @@ bool SessionRegistry::save_all(const std::vector<SessionInfo>& sessions) {
 bool SessionRegistry::add(const SessionInfo& session) {
     std::vector<SessionInfo> sessions;
     load_all(sessions);
+    for (const auto& s : sessions) {
+        if (s.session_id == session.session_id) return false;
+    }
     sessions.push_back(session);
     return save_all(sessions);
 }
@@ -229,14 +237,14 @@ bool SessionRegistry::upsert(const SessionInfo& session) {
     return save_all(sessions);
 }
 
-bool SessionRegistry::touch(int session_id, time_t last_active) {
+bool SessionRegistry::touch(const std::string& session_id, time_t last_active) {
     SessionInfo session;
     if (!get(session_id, session)) return false;
     session.last_active = last_active;
     return upsert(session);
 }
 
-bool SessionRegistry::remove(int session_id) {
+bool SessionRegistry::remove(const std::string& session_id) {
     std::vector<SessionInfo> sessions;
     if (!load_all(sessions)) return false;
     std::vector<SessionInfo> kept;
@@ -254,7 +262,7 @@ bool SessionRegistry::remove(int session_id) {
     return ok;
 }
 
-bool SessionRegistry::get(int session_id, SessionInfo& session) {
+bool SessionRegistry::get(const std::string& session_id, SessionInfo& session) {
     std::vector<SessionInfo> sessions;
     if (!load_all(sessions)) return false;
     for (const auto& s : sessions) {
@@ -269,26 +277,25 @@ bool SessionRegistry::get(int session_id, SessionInfo& session) {
 bool SessionRegistry::get_latest(SessionInfo& session) {
     std::vector<SessionInfo> sessions;
     if (!load_all(sessions) || sessions.empty()) return false;
-    int max_id = -1;
-    size_t max_idx = 0;
-    for (size_t i = 0; i < sessions.size(); ++i) {
-        if (sessions[i].session_id > max_id) {
-            max_id = sessions[i].session_id;
-            max_idx = i;
-        }
+    size_t latest_idx = 0;
+    for (size_t i = 1; i < sessions.size(); ++i) {
+        if (sessions[i].created_at > sessions[latest_idx].created_at) latest_idx = i;
     }
-    session = sessions[max_idx];
+    session = sessions[latest_idx];
     return true;
 }
 
-int SessionRegistry::get_next_id() {
-    std::vector<SessionInfo> sessions;
-    if (!load_all(sessions)) return 1;
-    int max_id = 0;
-    for (const auto& s : sessions) {
-        if (s.session_id > max_id) max_id = s.session_id;
+bool SessionRegistry::exists(const std::string& session_id) {
+    SessionInfo session;
+    return get(session_id, session);
+}
+
+bool SessionRegistry::is_valid_session_name(const std::string& name) {
+    if (name.empty() || name.size() > 256) return false;
+    for (unsigned char c : name) {
+        if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.')) return false;
     }
-    return max_id + 1;
+    return true;
 }
 
 bool SessionRegistry::cleanup_stale() {

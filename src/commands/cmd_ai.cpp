@@ -152,16 +152,36 @@ std::vector<std::string> target_dbdir_args(const json& request) {
     return args;
 }
 
+std::string json_session_id(const json& value) {
+    if (value.is_string()) return value.get<std::string>();
+    return "";
+}
+
+std::string request_session_name(const json& request) {
+    const json target = request.value("target", json::object());
+    const json args = request.value("args", json::object());
+    if (args.contains("name") && args["name"].is_string()) return args["name"].get<std::string>();
+    if (target.contains("name") && target["name"].is_string()) return target["name"].get<std::string>();
+    return "";
+}
+
+std::string ensure_error_code(const SessionEnsureResult& result) {
+    if (result.status == "session_id_exists") return "SESSION_ID_EXISTS";
+    if (result.status == "invalid_session_id") return "INVALID_SESSION_ID";
+    if (result.status == "invalid_args") return "INVALID_REQUEST";
+    return "SESSION_UNHEALTHY";
+}
+
 bool ensure_target_session(const json& request,
                            json& response,
-                           int& session_id,
+                           std::string& session_id,
                            SessionInfo& session,
                            bool allow_latest = false) {
     SessionManager manager;
     const json target = request.value("target", json::object());
 
-    if (target.contains("session_id") && target["session_id"].is_number_integer()) {
-        session_id = target["session_id"].get<int>();
+    if (target.contains("session_id") && target["session_id"].is_string()) {
+        session_id = target["session_id"].get<std::string>();
         if (!manager.get_session(session_id, session)) {
             SessionHealth health = manager.diagnose_session(session_id);
             response = error_response(request, request.value("action", ""),
@@ -182,10 +202,10 @@ bool ensure_target_session(const json& request,
                                       "target.dbdir requires auto_ensure=true or an existing session_id");
             return false;
         }
-        SessionEnsureResult ensured = manager.ensure_session(design_args);
+        SessionEnsureResult ensured = manager.ensure_session(design_args, request_session_name(request));
         if (!ensured.ok) {
             response = error_response(request, request.value("action", ""),
-                                      "SESSION_UNHEALTHY",
+                                      ensure_error_code(ensured),
                                       ensured.message.empty() ? "failed to ensure session" : ensured.message);
             return false;
         }
@@ -197,15 +217,9 @@ bool ensure_target_session(const json& request,
         return true;
     }
 
-    if (allow_latest && manager.get_latest_session(session)) {
-        session_id = session.session_id;
-        response["session"] = session_to_json(session);
-        return true;
-    }
-
-    response = error_response(request, request.value("action", ""),
+        response = error_response(request, request.value("action", ""),
                               "INVALID_TARGET",
-                              "target must contain session_id or dbdir");
+                              "target must contain string session_id or dbdir with args.name");
     return false;
 }
 
@@ -226,7 +240,7 @@ std::string option_string_from_limits_args(const json& request) {
     return options;
 }
 
-bool send_json_command(int session_id,
+bool send_json_command(const std::string& session_id,
                        const std::string& cmd,
                        json& parsed,
                        std::string& error_status,
@@ -477,7 +491,7 @@ json make_trace_summary(const json& trace) {
 
 json run_trace_action(const json& request, const std::string& mode) {
     json response = base_response(request, request.value("action", ""));
-    int session_id = -1;
+    std::string session_id;
     SessionInfo session;
     if (!ensure_target_session(request, response, session_id, session)) return response;
 
@@ -520,7 +534,7 @@ json run_trace_action(const json& request, const std::string& mode) {
 
 json run_signal_resolve_action(const json& request) {
     json response = base_response(request, request.value("action", ""));
-    int session_id = -1;
+    std::string session_id;
     SessionInfo session;
     if (!ensure_target_session(request, response, session_id, session)) return response;
 
@@ -693,7 +707,7 @@ bool edge_type_allowed(const json& args, const json& edge) {
 
 json trace_expand_like(const json& request, bool explain_only = false) {
     json response = base_response(request, request.value("action", ""));
-    int session_id = -1;
+    std::string session_id;
     SessionInfo session;
     if (!ensure_target_session(request, response, session_id, session)) return response;
 
@@ -1220,7 +1234,7 @@ json run_counter_explain_action(const json& request) {
 
 json run_port_like_action(const json& request, const std::string& action) {
     json response = base_response(request, action);
-    int session_id = -1;
+    std::string session_id;
     SessionInfo session;
     if (!ensure_target_session(request, response, session_id, session)) return response;
 
@@ -1270,7 +1284,7 @@ json schema_payload() {
             {"request_id", "optional-id"},
             {"action", "trace.driver"},
             {"target", {{"dbdir", "/path/to/simv.daidir"}, {"session_id", nullptr}, {"auto_ensure", true}}},
-            {"args", json::object()},
+            {"args", {{"name", "case_a"}}},
             {"limits", {{"max_results", 50}, {"max_depth", 1}, {"max_paths", 10}, {"timeout_ms", 5000}}},
             {"output", {{"verbosity", "compact"}, {"include_source", true}, {"include_control_dependencies", true}, {"include_expr", true}, {"include_graph", false}}}
         }},
@@ -1334,12 +1348,12 @@ json handle_session_action(const json& request, const std::string& action) {
     if (action == "session.open" || action == "session.ensure") {
         std::vector<std::string> args = target_dbdir_args(request);
         if (args.empty()) return error_response(request, action, "INVALID_TARGET", "target.dbdir is required");
-        SessionEnsureResult result = manager.ensure_session(args);
-        if (!result.ok) return error_response(request, action, "SESSION_UNHEALTHY", result.message);
+        SessionEnsureResult result = manager.ensure_session(args, request_session_name(request));
+        if (!result.ok) return error_response(request, action, ensure_error_code(result), result.message);
         response["session"] = session_to_json(result.info);
         response["session"]["reused"] = result.reused;
         response["session"]["healthy"] = true;
-        response["summary"] = {{"session_id", result.session_id}, {"status", result.status}, {"reused", result.reused}};
+        response["summary"] = {{"id", result.session_id}, {"session_id", result.session_id}, {"status", result.status}, {"reused", result.reused}};
         response["data"] = {{"session", response["session"]}};
         return response;
     }
@@ -1351,12 +1365,16 @@ json handle_session_action(const json& request, const std::string& action) {
         return response;
     }
     if (action == "session.doctor") {
-        int sid = request.value("target", json::object()).value("session_id", request.value("args", json::object()).value("session_id", 0));
-        if (sid <= 0) return error_response(request, action, "MISSING_FIELD", "target.session_id or args.session_id is required");
+        json target = request.value("target", json::object());
+        json args = request.value("args", json::object());
+        std::string sid;
+        if (target.contains("session_id")) sid = json_session_id(target["session_id"]);
+        if (sid.empty() && args.contains("session_id")) sid = json_session_id(args["session_id"]);
+        if (sid.empty()) return error_response(request, action, "MISSING_FIELD", "target.session_id or args.session_id string is required");
         SessionHealth h = manager.diagnose_session(sid);
         response["ok"] = h.healthy;
         response["session"] = session_to_json(h.info);
-        response["summary"] = {{"session_id", sid}, {"healthy", h.healthy}, {"status", session_health_status_name(h.status)}, {"message", h.message}};
+        response["summary"] = {{"id", sid}, {"session_id", sid}, {"healthy", h.healthy}, {"status", session_health_status_name(h.status)}, {"message", h.message}};
         response["data"] = {{"health", response["summary"]}};
         if (!h.healthy) response["error"] = {{"code", "SESSION_UNHEALTHY"}, {"message", h.message}, {"recoverable", true}, {"candidates", json::array()}, {"suggested_actions", json::array()}};
         return response;
@@ -1369,24 +1387,15 @@ json handle_session_action(const json& request, const std::string& action) {
             response["summary"] = {{"target", "all"}, {"killed", ok}};
             return response;
         }
-        int sid = 0;
+        std::string sid;
         json target = request.value("target", json::object());
-        if (target.contains("session_id") && target["session_id"].is_number_integer()) {
-            sid = target["session_id"].get<int>();
-        } else if (args.contains("session_id") && args["session_id"].is_number_integer()) {
-            sid = args["session_id"].get<int>();
-        } else if (args.contains("id")) {
-            if (args["id"].is_number_integer()) sid = args["id"].get<int>();
-            else if (args["id"].is_string()) sid = atoi(args["id"].get<std::string>().c_str());
-        }
-        if (sid <= 0 && action == "session.close") {
-            SessionInfo latest;
-            if (manager.get_latest_session(latest)) sid = latest.session_id;
-        }
-        if (sid <= 0) return error_response(request, action, "MISSING_FIELD", "session id is required");
+        if (target.contains("session_id")) sid = json_session_id(target["session_id"]);
+        else if (args.contains("session_id")) sid = json_session_id(args["session_id"]);
+        else if (args.contains("id")) sid = json_session_id(args["id"]);
+        if (sid.empty()) return error_response(request, action, "MISSING_FIELD", "session id string is required");
         bool ok = manager.kill_session(sid);
         response["ok"] = ok;
-        response["summary"] = {{"session_id", sid}, {"killed", ok}};
+        response["summary"] = {{"id", sid}, {"session_id", sid}, {"killed", ok}};
         if (!ok) response["error"] = {{"code", "SESSION_NOT_FOUND"}, {"message", "failed to kill session"}, {"recoverable", true}, {"candidates", json::array()}, {"suggested_actions", json::array()}};
         return response;
     }

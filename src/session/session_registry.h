@@ -9,7 +9,7 @@ namespace xtrace {
 
 // Session information structure
 struct SessionInfo {
-    int session_id;             // Unique session ID
+    std::string session_id;     // Unique user-specified session name
     std::string socket_path;    // Unix domain socket path
     std::string design_file;    // Design file loaded
     std::string dbdir_path;     // Canonical VCS daidir path
@@ -22,7 +22,7 @@ struct SessionInfo {
     unsigned long long dbdir_inode;  // daidir inode
 
     SessionInfo()
-        : session_id(0),
+        : session_id(),
           server_pid(0),
           created_at(0),
           last_active(0),
@@ -48,19 +48,19 @@ public:
     bool upsert(const SessionInfo& session);
 
     // Update last active timestamp
-    bool touch(int session_id, time_t last_active);
+    bool touch(const std::string& session_id, time_t last_active);
 
     // Remove a session from registry
-    bool remove(int session_id);
+    bool remove(const std::string& session_id);
 
     // Get session by ID
-    bool get(int session_id, SessionInfo& session);
+    bool get(const std::string& session_id, SessionInfo& session);
 
     // Get the latest session (highest ID)
     bool get_latest(SessionInfo& session);
 
-    // Get next available session ID
-    int get_next_id();
+    bool exists(const std::string& session_id);
+    static bool is_valid_session_name(const std::string& name);
 
     // Clean up stale sessions (dead processes)
     bool cleanup_stale();

@@ -18,7 +18,7 @@ enum class SessionHealthStatus {
 };
 
 struct SessionHealth {
-    int session_id = 0;
+    std::string session_id;
     bool healthy = false;
     SessionHealthStatus status = SessionHealthStatus::RegistryMissing;
     std::string message;
@@ -26,7 +26,7 @@ struct SessionHealth {
 };
 
 struct SessionEnsureResult {
-    int session_id = 0;
+    std::string session_id;
     bool ok = false;
     bool reused = false;
     std::string status;
@@ -57,37 +57,37 @@ public:
 
     // Create a new session, returns session ID (0 on failure)
     // This spawns the server process
-    int create_session(const std::vector<std::string>& design_args);
+    SessionEnsureResult create_session(const std::vector<std::string>& design_args, const std::string& session_name);
 
     // Ensure a healthy session exists for a dbdir argument list.
-    SessionEnsureResult ensure_session(const std::vector<std::string>& design_args);
+    SessionEnsureResult ensure_session(const std::vector<std::string>& design_args, const std::string& session_name);
 
     // Kill a specific session (calls npi_end() in server)
-    bool kill_session(int session_id);
+    bool kill_session(const std::string& session_id);
 
     // Kill all sessions
     bool kill_all_sessions();
 
     // Get session info by ID
-    bool get_session(int session_id, SessionInfo& info);
+    bool get_session(const std::string& session_id, SessionInfo& info);
 
     // Get the latest (most recent) session
     bool get_latest_session(SessionInfo& info);
 
     // Update activity timestamp
-    bool touch_session(int session_id);
+    bool touch_session(const std::string& session_id);
 
     // List all active sessions
     std::vector<SessionInfo> list_sessions();
 
     // Diagnose a session without mutating the registry
-    SessionHealth diagnose_session(int session_id);
+    SessionHealth diagnose_session(const std::string& session_id);
 
     // Check if a session is alive
-    bool is_session_alive(int session_id);
+    bool is_session_alive(const std::string& session_id);
 
     // Get socket path for a session
-    std::string get_socket_path(int session_id);
+    std::string get_socket_path(const std::string& session_id);
 
     // Clean up stale sessions
     void cleanup();
@@ -96,10 +96,10 @@ private:
     std::unique_ptr<SessionRegistry> registry_;
 
     // Fork and exec server process
-    pid_t spawn_server(int session_id, const std::vector<std::string>& args);
+    pid_t spawn_server(const std::string& session_id, const std::vector<std::string>& args);
 
     // Wait until the server responds to PING
-    WaitForServerResult wait_for_server(int session_id, pid_t pid);
+    WaitForServerResult wait_for_server(const std::string& session_id, pid_t pid);
     void debug_log(const char* fmt, ...) const;
 
     bool parse_open_args(const std::vector<std::string>& design_args,

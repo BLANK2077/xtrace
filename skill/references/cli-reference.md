@@ -19,30 +19,30 @@ xtrace 用于加载 VCS `simv.daidir` 数据库，并查询 RTL 信号的 driver
 ```bash
 export VERDI_HOME=/path/to/verdi/V-2023.12-SP2
 make
-tools/xtrace-env session ensure -dbdir /path/to/simv.daidir -json
+tools/xtrace-env session ensure -dbdir /path/to/simv.daidir --name case_a -json
 ```
 
 ## 基本用法
 
 ```bash
 # 1. 加载 VCS daidir；路径必须以 .daidir 结尾。
-tools/xtrace-env open -dbdir /path/to/simv.daidir
+tools/xtrace-env open -dbdir /path/to/simv.daidir --name case_a
 
-# Agent 或脚本优先使用 ensure：健康则复用，不存在则创建。
-tools/xtrace-env session ensure -dbdir /path/to/simv.daidir -json
+# Agent 或脚本优先使用 ensure：必须传 --name，重复 name 会失败。
+tools/xtrace-env session ensure -dbdir /path/to/simv.daidir --name case_a -json
 
 # 2. 查看和诊断 session。
 tools/xtrace-env session list
-tools/xtrace-env session doctor -s 1
-tools/xtrace-env session doctor -s 1 -json
+tools/xtrace-env session doctor -s case_a
+tools/xtrace-env session doctor -s case_a -json
 
 # 3. 查询 signal driver/load。
-tools/xtrace-env driver top.u_dut.signal -s 1
-tools/xtrace-env load top.u_dut.signal -s 1
+tools/xtrace-env driver top.u_dut.signal -s case_a
+tools/xtrace-env load top.u_dut.signal -s case_a
 
 # 4. 需要脚本处理时使用 JSON 输出。
-tools/xtrace-env driver top.u_dut.signal -s 1 -json
-tools/xtrace-env load top.u_dut.signal -s 1 -json
+tools/xtrace-env driver top.u_dut.signal -s case_a -json
+tools/xtrace-env load top.u_dut.signal -s case_a -json
 
 # 5. 一条命令完成 ensure + trace。
 tools/xtrace-env query -dbdir /path/to/simv.daidir --driver top.u_dut.signal -json
@@ -57,10 +57,10 @@ tools/xtrace-env session kill all
 
 - `open` 只接受 `-dbdir <*.daidir> [other options]`。
 - daidir 路径必须存在、必须是目录、且必须以 `.daidir` 结尾。
-- 再次打开同一个 daidir 时，xtrace 会复用已有健康 session。
-- `session ensure -dbdir <*.daidir> [-json]` 更适合脚本：健康则复用，不存在则创建，JSON 输出包含 `ok/session_id/status/reused/dbdir_path/message`。
-- `session doctor -s <sid> [-json] [--debug]` 是判断 session 是否可用的首选命令。
-- `--debug` 或 `XTRACE_DEBUG=1` 会把 session 生命周期诊断打印到 stderr；server 启动日志位于 `~/.xtrace/sessions/<sid>/debug.log`。
+- 再次使用同一个 name 创建 session 会失败；请先 `session kill <name>` 或选择新 name。
+- `session ensure -dbdir <*.daidir> --name <name> [-json]` 更适合脚本：创建具名 session；重复 name 会失败。JSON 输出包含 `ok/id/session_id/status/dbdir_path/message`。
+- `session doctor -s <name> [-json] [--debug]` 是判断 session 是否可用的首选命令。
+- `--debug` 或 `XTRACE_DEBUG=1` 会把 session 生命周期诊断打印到 stderr；server 启动日志位于 `~/.xtrace/sessions/<name>/debug.log`。
 - 常见状态包括：`healthy`、`registry_missing`、`dbdir_missing`、`dbdir_changed`、`process_exited`、`socket_missing`、`connect_failed`、`ping_failed`。
 
 维护文件统一放在 `~/.xtrace/`：
@@ -70,7 +70,7 @@ tools/xtrace-env session kill all
 ├── registry.json
 ├── registry.lock
 └── sessions/
-    └── <sid>/
+    └── <name>/
         ├── session.json
         ├── socket
         └── debug.log
@@ -119,7 +119,7 @@ JSON 示例：
 当不确定完整层级路径时，先用外部 `rg`/grep 在 RTL 源码中查候选，再用 `signal resolve` 验证完整路径：
 
 ```bash
-tools/xtrace-env signal resolve top.u_dut.signal -s 1 -json
+tools/xtrace-env signal resolve top.u_dut.signal -s case_a -json
 rg -n "signal" /path/to/rtl
 ```
 
@@ -163,7 +163,7 @@ tools/xtrace-env ai actions
 tools/xtrace-env session list
 
 # 命令连接失败或结果异常
-tools/xtrace-env session doctor -s 1 -json
+tools/xtrace-env session doctor -s case_a -json
 
 # 清理不可用或不再需要的 session
 tools/xtrace-env session kill 1

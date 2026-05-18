@@ -34,7 +34,7 @@
 #define ERROR_PREFIX        "ERROR: "
 
 // Get socket path for a given session ID
-inline void get_sock_path(char* buf, int session_id) {
+inline void get_sock_path(char* buf, const std::string& session_id) {
     snprintf(buf, SOCK_PATH_LEN, "%s", xtrace::xtrace_socket_path(session_id).c_str());
 }
 
@@ -47,6 +47,6 @@ inline void get_registry_lock_path(char* buf) {
     snprintf(buf, SOCK_PATH_LEN, "%s", xtrace::xtrace_registry_lock_path().c_str());
 }
 
-inline void get_debug_log_path(char* buf, int session_id) {
+inline void get_debug_log_path(char* buf, const std::string& session_id) {
     snprintf(buf, SOCK_PATH_LEN, "%s", xtrace::xtrace_debug_log_path(session_id).c_str());
 }

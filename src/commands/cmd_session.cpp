@@ -40,76 +40,90 @@ static bool is_debug_arg(const char* arg) {
 void print_help(const char* prog) {
     printf("XTrace - NPI-based Signal Tracing Tool\n\n");
     printf("Usage:\n");
-    printf("  %s open -dbdir <simv.daidir> [args...]  Load design and create new session\n", prog);
-    printf("  %s open -dbdir <simv.daidir> --debug  Print session startup diagnostics\n", prog);
+    printf("  %s open -dbdir <simv.daidir> --name <name> [args...]  Load design and create named session\n", prog);
+    printf("  %s open -dbdir <simv.daidir> --name <name> --debug  Print session startup diagnostics\n", prog);
     printf("  %s session list        List all active sessions\n", prog);
-    printf("  %s session ensure -dbdir <simv.daidir> [-json] [args...]  Ensure healthy session\n", prog);
-    printf("  %s session kill <id>   Kill a specific session\n", prog);
+    printf("  %s session ensure -dbdir <simv.daidir> --name <name> [-json] [args...]  Create named session\n", prog);
+    printf("  %s session kill <name> Kill a specific session\n", prog);
     printf("  %s session kill all    Kill all sessions\n", prog);
-    printf("  %s session doctor -s <sid> [-json] [--debug]  Diagnose a session\n", prog);
-    printf("  %s driver <sig> [-s <sid>] [-json]  Trace signal drivers\n", prog);
-    printf("  %s load   <sig> [-s <sid>] [-json]  Trace signal loads\n", prog);
-    printf("  %s signal resolve <signal> -s <sid> [-json]\n", prog);
-    printf("  %s query -dbdir <simv.daidir> <--driver|--load> <sig> [-json] [filters]\n", prog);
+    printf("  %s session doctor -s <name> [-json] [--debug]  Diagnose a session\n", prog);
+    printf("  %s driver <sig> -s <name> [-json]  Trace signal drivers\n", prog);
+    printf("  %s load   <sig> -s <name> [-json]  Trace signal loads\n", prog);
+    printf("  %s signal resolve <signal> -s <name> [-json]\n", prog);
+    printf("  %s query -dbdir <simv.daidir> --name <name> <--driver|--load> <sig> [-json] [filters]\n", prog);
     printf("  %s ai <query|schema|actions> ...  AI JSON interface\n", prog);
-    printf("  %s close               Close the latest session\n", prog);
+    printf("  %s close               Close the latest-created session\n", prog);
     printf("  %s help                Show this help\n", prog);
     printf("\nExamples:\n");
-    printf("  %s open -dbdir simv.daidir\n", prog);
-    printf("  %s session ensure -dbdir simv.daidir -json\n", prog);
+    printf("  %s open -dbdir simv.daidir --name case_a\n", prog);
+    printf("  %s session ensure -dbdir simv.daidir --name case_a -json\n", prog);
     printf("  %s ai query --json '{\"api_version\":\"xtrace.ai.v1\",\"action\":\"trace.driver\",...}'\n", prog);
     printf("  %s session list\n", prog);
-    printf("  %s session kill 1\n", prog);
+    printf("  %s session kill case_a\n", prog);
     printf("\nDebug:\n");
     printf("  Use --debug or XTRACE_DEBUG=1 to print session lifecycle diagnostics to stderr.\n");
-    printf("  Server debug logs are written to ~/.xtrace/sessions/<sid>/debug.log.\n");
+    printf("  Server debug logs are written to ~/.xtrace/sessions/<hashed-name>/debug.log.\n");
 }
 
 int cmd_open(int argc, char** argv) {
     if (argc < 4 || strcmp(argv[2], "-dbdir") != 0) {
-        fprintf(stderr, "Usage: %s open -dbdir <simv.daidir> [args...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s open -dbdir <simv.daidir> --name <name> [args...]\n", argv[0]);
         return 1;
     }
 
-    // Collect design args (skip "open")
+    std::string session_name;
     std::vector<std::string> design_args;
     for (int i = 2; i < argc; i++) {
         if (is_debug_arg(argv[i])) continue;
+        if ((strcmp(argv[i], "--name") == 0 || strcmp(argv[i], "-n") == 0) && i + 1 < argc) {
+            session_name = argv[++i];
+            continue;
+        }
         design_args.push_back(argv[i]);
     }
-
-    SessionManager manager;
-    int session_id = manager.create_session(design_args);
-
-    if (session_id <= 0) {
-        fprintf(stderr, "Error: Failed to create session\n");
+    if (session_name.empty()) {
+        fprintf(stderr, "Error: session name is required. Use --name <name>.\n");
         return 1;
     }
 
-    printf("[Session %d] Database loaded: %s\n", session_id, argv[3]);
+    SessionManager manager;
+    SessionEnsureResult result = manager.create_session(design_args, session_name);
+
+    if (!result.ok) {
+        fprintf(stderr, "Error: %s (status=%s)\n",
+                result.message.empty() ? "Failed to create session" : result.message.c_str(),
+                result.status.empty() ? "error" : result.status.c_str());
+        return 1;
+    }
+
+    printf("[Session %s] Database loaded: %s\n", result.session_id.c_str(), result.info.dbdir_path.c_str());
     return 0;
 }
 
 int cmd_session_ensure(int argc, char** argv) {
     bool json_output = has_json_arg(argc, argv);
     std::vector<std::string> design_args;
+    std::string session_name;
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-json") == 0) {
             continue;
         } else if (is_debug_arg(argv[i])) {
             continue;
+        } else if ((strcmp(argv[i], "--name") == 0 || strcmp(argv[i], "-n") == 0) && i + 1 < argc) {
+            session_name = argv[++i];
         } else {
             design_args.push_back(argv[i]);
         }
     }
 
     SessionManager manager;
-    SessionEnsureResult result = manager.ensure_session(design_args);
+    SessionEnsureResult result = manager.ensure_session(design_args, session_name);
 
     if (json_output) {
         json payload = {
             {"ok", result.ok},
+            {"id", result.session_id},
             {"session_id", result.session_id},
             {"status", result.status.empty() ? (result.ok ? "healthy" : "error") : result.status},
             {"reused", result.reused},
@@ -118,9 +132,9 @@ int cmd_session_ensure(int argc, char** argv) {
         };
         printf("%s\n", payload.dump(2).c_str());
     } else if (result.ok) {
-        printf("[Session %d] %s: %s\n",
-               result.session_id,
-               result.reused ? "Reused" : "Database loaded",
+        printf("[Session %s] %s: %s\n",
+               result.session_id.c_str(),
+               "Database loaded",
                result.info.dbdir_path.c_str());
     } else {
         fprintf(stderr, "Error: %s (status=%s)\n",
@@ -140,8 +154,8 @@ int cmd_session_list() {
         return 0;
     }
 
-    printf("ID  | PID     | Created             | Last Active         | Daidir                    | Socket Path\n");
-    printf("----|---------|---------------------|---------------------|---------------------------|------------------------------\n");
+    printf("ID                   | PID     | Created             | Last Active         | Daidir                    | Socket Path\n");
+    printf("---------------------|---------|---------------------|---------------------|---------------------------|------------------------------\n");
 
     for (const auto& s : sessions) {
         // Truncate design name if too long
@@ -149,8 +163,8 @@ int cmd_session_list() {
         if (dbdir.length() > 25) {
             dbdir = "..." + dbdir.substr(dbdir.length() - 22);
         }
-        printf("%-3d | %-7d | %-19s | %-19s | %-25s | %s\n",
-               s.session_id,
+        printf("%-20s | %-7d | %-19s | %-19s | %-25s | %s\n",
+               s.session_id.c_str(),
                s.server_pid,
                format_epoch(s.created_at).c_str(),
                format_epoch(s.last_active).c_str(),
@@ -171,57 +185,52 @@ int cmd_session_kill(const char* id_str) {
         return 0;
     }
 
-    int session_id = atoi(id_str);
-    if (session_id <= 0) {
-        fprintf(stderr, "Error: Invalid session ID: %s\n", id_str);
-        return 1;
-    }
-
+    std::string session_id = id_str ? id_str : "";
     SessionManager manager;
     SessionHealth health = manager.diagnose_session(session_id);
     if (health.status == SessionHealthStatus::RegistryMissing) {
-        fprintf(stderr, "Error: Session %d is not in registry\n", session_id);
+        fprintf(stderr, "Error: Session %s is not in registry\n", session_id.c_str());
         return 1;
     }
 
     if (health.healthy) {
-        printf("Killing session %d...\n", session_id);
+        printf("Killing session %s...\n", session_id.c_str());
     } else {
-        printf("Cleaning stale session %d (%s: %s)...\n",
-               session_id,
+        printf("Cleaning stale session %s (%s: %s)...\n",
+               session_id.c_str(),
                session_health_status_name(health.status),
                health.message.c_str());
     }
 
     if (manager.kill_session(session_id)) {
-        printf("Session %d removed.\n", session_id);
+        printf("Session %s removed.\n", session_id.c_str());
         return 0;
     } else {
-        fprintf(stderr, "Error: Failed to kill session %d\n", session_id);
+        fprintf(stderr, "Error: Failed to kill session %s\n", session_id.c_str());
         return 1;
     }
 }
 
 int cmd_session_doctor(int argc, char** argv) {
-    int session_id = -1;
+    std::string session_id;
     bool json_output = false;
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-            session_id = atoi(argv[++i]);
+            session_id = argv[++i];
         } else if (strcmp(argv[i], "-json") == 0) {
             json_output = true;
         } else if (is_debug_arg(argv[i])) {
             continue;
         } else {
-            fprintf(stderr, "Usage: %s session doctor -s <sid> [-json] [--debug]\n", argv[0]);
+            fprintf(stderr, "Usage: %s session doctor -s <name> [-json] [--debug]\n", argv[0]);
             return 1;
         }
     }
 
-    if (session_id <= 0) {
-        fprintf(stderr, "Usage: %s session doctor -s <sid> [-json] [--debug]\n", argv[0]);
-        fprintf(stderr, "Error: session doctor requires -s <sid>\n");
+    if (session_id.empty()) {
+        fprintf(stderr, "Usage: %s session doctor -s <name> [-json] [--debug]\n", argv[0]);
+        fprintf(stderr, "Error: session doctor requires -s <name>\n");
         return 1;
     }
 
@@ -231,6 +240,7 @@ int cmd_session_doctor(int argc, char** argv) {
 
     if (json_output) {
         json payload = {
+            {"id", health.session_id},
             {"session_id", health.session_id},
             {"healthy", health.healthy},
             {"status", status},
@@ -246,17 +256,17 @@ int cmd_session_doctor(int argc, char** argv) {
         };
         printf("%s\n", payload.dump(2).c_str());
     } else if (health.healthy) {
-        printf("Session %d healthy\n", session_id);
+        printf("Session %s healthy\n", session_id.c_str());
         printf("  status: %s\n", status);
         printf("  pid: %d\n", health.info.server_pid);
         printf("  socket_path: %s\n", health.info.socket_path.c_str());
         printf("  design_file: %s\n", health.info.design_file.c_str());
         printf("  dbdir_path: %s\n", health.info.dbdir_path.c_str());
     } else {
-        printf("Session %d unhealthy\n", session_id);
+        printf("Session %s unhealthy\n", session_id.c_str());
         printf("  status: %s\n", status);
         printf("  message: %s\n", health.message.c_str());
-        if (health.info.session_id > 0) {
+        if (!health.info.session_id.empty()) {
             printf("  pid: %d\n", health.info.server_pid);
             printf("  socket_path: %s\n", health.info.socket_path.c_str());
             printf("  design_file: %s\n", health.info.design_file.c_str());
@@ -276,12 +286,12 @@ int cmd_close() {
         return 1;
     }
 
-    printf("Closing session %d...\n", session.session_id);
+    printf("Closing session %s...\n", session.session_id.c_str());
     if (manager.kill_session(session.session_id)) {
-        printf("Session %d closed.\n", session.session_id);
+        printf("Session %s closed.\n", session.session_id.c_str());
         return 0;
     } else {
-        fprintf(stderr, "Error: Failed to close session %d\n", session.session_id);
+        fprintf(stderr, "Error: Failed to close session %s\n", session.session_id.c_str());
         return 1;
     }
 }

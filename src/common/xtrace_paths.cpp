@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <sstream>
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -38,8 +39,19 @@ std::string xtrace_sessions_dir() {
     return xtrace_home_dir() + "/sessions";
 }
 
-std::string xtrace_session_dir(int session_id) {
-    return xtrace_sessions_dir() + "/" + std::to_string(session_id);
+std::string session_dir_name(const std::string& session_id) {
+    unsigned long long h = 1469598103934665603ULL;
+    for (unsigned char c : session_id) {
+        h ^= static_cast<unsigned long long>(c);
+        h *= 1099511628211ULL;
+    }
+    std::ostringstream oss;
+    oss << "s_" << std::hex << h;
+    return oss.str();
+}
+
+std::string xtrace_session_dir(const std::string& session_id) {
+    return xtrace_sessions_dir() + "/" + session_dir_name(session_id);
 }
 
 std::string xtrace_registry_path() {
@@ -50,15 +62,15 @@ std::string xtrace_registry_lock_path() {
     return xtrace_home_dir() + "/registry.lock";
 }
 
-std::string xtrace_session_json_path(int session_id) {
+std::string xtrace_session_json_path(const std::string& session_id) {
     return xtrace_session_dir(session_id) + "/session.json";
 }
 
-std::string xtrace_socket_path(int session_id) {
+std::string xtrace_socket_path(const std::string& session_id) {
     return xtrace_session_dir(session_id) + "/socket";
 }
 
-std::string xtrace_debug_log_path(int session_id) {
+std::string xtrace_debug_log_path(const std::string& session_id) {
     return xtrace_session_dir(session_id) + "/debug.log";
 }
 
@@ -75,11 +87,11 @@ bool xtrace_ensure_home() {
     return ok;
 }
 
-bool xtrace_ensure_session_dir(int session_id) {
+bool xtrace_ensure_session_dir(const std::string& session_id) {
     return xtrace_ensure_home() && ensure_dir(xtrace_session_dir(session_id));
 }
 
-bool xtrace_remove_session_dir(int session_id) {
+bool xtrace_remove_session_dir(const std::string& session_id) {
     std::string dir = xtrace_session_dir(session_id);
     remove_file_if_exists(dir + "/session.json");
     remove_file_if_exists(dir + "/socket");

@@ -25,7 +25,7 @@
 namespace xtrace {
 
 // Global for cleanup
-static int g_session_id = 0;
+static std::string g_session_id;
 static int g_srv_fd = -1;
 static char g_sock_path[SOCK_PATH_LEN];
 static FILE* g_debug_log = nullptr;
@@ -37,14 +37,14 @@ static bool server_debug_enabled() {
 }
 
 static void server_debug_open_log() {
-    if (!server_debug_enabled() || g_session_id <= 0) return;
+    if (!server_debug_enabled() || g_session_id.empty()) return;
     xtrace_ensure_session_dir(g_session_id);
     char log_path[SOCK_PATH_LEN];
     get_debug_log_path(log_path, g_session_id);
     g_debug_log = fopen(log_path, "a");
     if (g_debug_log) {
         chmod(log_path, 0600);
-        fprintf(g_debug_log, "=== xtrace server debug session=%d ===\n", g_session_id);
+        fprintf(g_debug_log, "=== xtrace server debug session=%s ===\n", g_session_id.c_str());
         fflush(g_debug_log);
     }
 }
@@ -333,14 +333,14 @@ int server_main(int argc, char** argv) {
     int arg_idx = 1;
 
     // Parse session ID
-    g_session_id = atoi(argv[arg_idx]);
-    if (g_session_id <= 0) {
+    g_session_id = argv[arg_idx];
+    if (g_session_id.empty()) {
         fprintf(stderr, "Invalid session ID: %s\n", argv[arg_idx]);
         return 1;
     }
     arg_idx++;
     server_debug_open_log();
-    server_debug_log("server_main: parsed session_id=%d argc=%d", g_session_id, argc);
+    server_debug_log("server_main: parsed session_id=%s argc=%d", g_session_id.c_str(), argc);
 
     // Build design args for NPI: [exe, ...design_args from arg_idx...]
     int npi_argc = argc - arg_idx + 1;

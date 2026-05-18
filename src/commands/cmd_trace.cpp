@@ -15,13 +15,13 @@ namespace xtrace {
 using json = nlohmann::json;
 
 static void print_command_json_error(const char* command,
-                                     int session_id,
+                                     const std::string& session_id,
                                      const char* status,
                                      const std::string& message) {
     json payload = {
         {"ok", false},
         {"command", command ? command : ""},
-        {"session_id", session_id},
+        {"session_id", session_id}, {"id", session_id},
         {"status", status ? status : "error"},
         {"message", message}
     };
@@ -75,13 +75,13 @@ static std::string build_trace_command(bool is_driver,
 
 static int cmd_trace(int argc, char** argv, bool is_driver) {
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s %s <signal> [-s <session_id>] [-json]\n",
+        fprintf(stderr, "Usage: %s %s <signal> -s <name> [-json]\n",
                 argv[0], is_driver ? "driver" : "load");
         return 1;
     }
 
     std::string signal = argv[2];
-    int session_id = -1;
+    std::string session_id;
     bool json_output = has_json_arg(argc, argv);
     int limit = 0;
     std::string role;
@@ -89,7 +89,7 @@ static int cmd_trace(int argc, char** argv, bool is_driver) {
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-            session_id = atoi(argv[++i]);
+            session_id = argv[++i];
         } else if (strcmp(argv[i], "-json") == 0) {
             continue;
         } else if (strcmp(argv[i], "--limit") == 0 && i + 1 < argc) {
@@ -111,7 +111,7 @@ static int cmd_trace(int argc, char** argv, bool is_driver) {
 
     SessionManager manager;
     SessionInfo session;
-    if (session_id > 0) {
+    if (!session_id.empty()) {
         if (!manager.get_session(session_id, session)) {
             SessionHealth health = manager.diagnose_session(session_id);
             if (json_output) {
@@ -120,23 +120,20 @@ static int cmd_trace(int argc, char** argv, bool is_driver) {
                                          session_health_status_name(health.status),
                                          health.message);
             } else {
-                fprintf(stderr, "Error: Session %d unavailable: %s (status=%s)\n",
-                        session_id,
+                fprintf(stderr, "Error: Session %s unavailable: %s (status=%s)\n",
+                        session_id.c_str(),
                         health.message.c_str(),
                         session_health_status_name(health.status));
             }
             return 1;
         }
     } else {
-        if (!manager.get_latest_session(session)) {
-            if (json_output) {
-                print_command_json_error(is_driver ? "driver" : "load", -1, "no_active_session", "No active sessions");
-            } else {
-                fprintf(stderr, "Error: No active sessions\n");
-            }
-            return 1;
+        if (json_output) {
+            print_command_json_error(is_driver ? "driver" : "load", session_id, "missing_session", "-s <name> is required");
+        } else {
+            fprintf(stderr, "Error: -s <name> is required\n");
         }
-        session_id = session.session_id;
+        return 1;
     }
 
     std::string cmd = build_trace_command(is_driver, json_output, signal, limit, role, no_statement_only);
@@ -154,7 +151,7 @@ static int cmd_trace(int argc, char** argv, bool is_driver) {
     }
 
     if (!send_command_and_print_ex(session_id, cmd.c_str(), false, is_driver ? "driver" : "load")) {
-        fprintf(stderr, "Error: Failed to send command to session %d\n", session_id);
+        fprintf(stderr, "Error: Failed to send command to session %s\n", session_id.c_str());
         return 1;
     }
     return 0;
@@ -170,23 +167,23 @@ int cmd_load(int argc, char** argv) {
 
 int cmd_signal(int argc, char** argv) {
     if (argc < 4) {
-        fprintf(stderr, "Usage: %s signal resolve <signal> -s <session_id> [-json]\n", argv[0]);
+        fprintf(stderr, "Usage: %s signal resolve <signal> -s <name> [-json]\n", argv[0]);
         return 1;
     }
 
     bool resolve = strcmp(argv[2], "resolve") == 0;
     if (!resolve) {
-        fprintf(stderr, "Usage: %s signal resolve <signal> -s <session_id> [-json]\n", argv[0]);
+        fprintf(stderr, "Usage: %s signal resolve <signal> -s <name> [-json]\n", argv[0]);
         return 1;
     }
 
     std::string pattern = argv[3];
-    int session_id = -1;
+    std::string session_id;
     bool json_output = has_json_arg(argc, argv);
 
     for (int i = 4; i < argc; ++i) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-            session_id = atoi(argv[++i]);
+            session_id = argv[++i];
         } else if (strcmp(argv[i], "-json") == 0) {
             continue;
         } else {
@@ -199,11 +196,11 @@ int cmd_signal(int argc, char** argv) {
         }
     }
 
-    if (session_id <= 0) {
+    if (session_id.empty()) {
         if (json_output) {
-            print_command_json_error("signal", session_id, "invalid_args", "signal requires -s <session_id>");
+            print_command_json_error("signal", session_id, "invalid_args", "signal requires -s <name>");
         } else {
-            fprintf(stderr, "Usage: %s signal resolve <signal> -s <session_id> [-json]\n", argv[0]);
+            fprintf(stderr, "Usage: %s signal resolve <signal> -s <name> [-json]\n", argv[0]);
         }
         return 1;
     }
@@ -238,6 +235,7 @@ int cmd_query(int argc, char** argv) {
     int limit = 0;
     std::string role;
     bool no_statement_only = false;
+    std::string session_name;
 
     for (int i = 2; i < argc; ++i) {
         if (strcmp(argv[i], "-dbdir") == 0 && i + 1 < argc) {
@@ -251,6 +249,8 @@ int cmd_query(int argc, char** argv) {
             is_driver = false;
             have_mode = true;
             signal = argv[++i];
+        } else if ((strcmp(argv[i], "--name") == 0 || strcmp(argv[i], "-n") == 0) && i + 1 < argc) {
+            session_name = argv[++i];
         } else if (strcmp(argv[i], "-json") == 0) {
             continue;
         } else if (strcmp(argv[i], "--limit") == 0 && i + 1 < argc) {
@@ -261,7 +261,7 @@ int cmd_query(int argc, char** argv) {
             no_statement_only = true;
         } else {
             if (json_output) {
-                print_command_json_error("query", -1, "invalid_args", std::string("Unknown option: ") + argv[i]);
+                print_command_json_error("query", "", "invalid_args", std::string("Unknown option: ") + argv[i]);
             } else {
                 fprintf(stderr, "Unknown option: %s\n", argv[i]);
             }
@@ -269,10 +269,10 @@ int cmd_query(int argc, char** argv) {
         }
     }
 
-    if (design_args.empty() || !have_mode || signal.empty()) {
-        const char* usage = "Usage: query -dbdir <simv.daidir> <--driver|--load> <signal> [-json] [filters]";
+    if (design_args.empty() || session_name.empty() || !have_mode || signal.empty()) {
+        const char* usage = "Usage: query -dbdir <simv.daidir> --name <name> <--driver|--load> <signal> [-json] [filters]";
         if (json_output) {
-            print_command_json_error("query", -1, "invalid_args", usage);
+            print_command_json_error("query", "", "invalid_args", usage);
         } else {
             fprintf(stderr, "%s\n", usage);
         }
@@ -280,7 +280,7 @@ int cmd_query(int argc, char** argv) {
     }
 
     SessionManager manager;
-    SessionEnsureResult ensure = manager.ensure_session(design_args);
+    SessionEnsureResult ensure = manager.ensure_session(design_args, session_name);
     if (!ensure.ok) {
         if (json_output) {
             json payload = {
@@ -333,9 +333,9 @@ int cmd_query(int argc, char** argv) {
         return combined["ok"].get<bool>() ? 0 : 1;
     }
 
-    printf("[Session %d] %s: %s\n",
-           ensure.session_id,
-           ensure.reused ? "Reused" : "Database loaded",
+    printf("[Session %s] %s: %s\n",
+           ensure.session_id.c_str(),
+           "Database loaded",
            ensure.info.dbdir_path.c_str());
     fwrite(payload.c_str(), 1, payload.size(), stdout);
     return 0;

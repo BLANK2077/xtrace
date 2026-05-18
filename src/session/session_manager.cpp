@@ -139,7 +139,7 @@ SessionManager::SessionManager() : registry_(new SessionRegistry()) {
 SessionManager::~SessionManager() {
 }
 
-pid_t SessionManager::spawn_server(int session_id, const std::vector<std::string>& args) {
+pid_t SessionManager::spawn_server(const std::string& session_id, const std::vector<std::string>& args) {
     // Get path to current executable
     char self_path[1024] = {};
     ssize_t len = readlink("/proc/self/exe", self_path, sizeof(self_path) - 1);
@@ -152,9 +152,8 @@ pid_t SessionManager::spawn_server(int session_id, const std::vector<std::string
     argv.push_back(self_path);
     argv.push_back((char*)"--server");
 
-    char session_id_str[16];
-    snprintf(session_id_str, sizeof(session_id_str), "%d", session_id);
-    argv.push_back(session_id_str);
+    std::string session_id_arg = session_id;
+    argv.push_back(const_cast<char*>(session_id_arg.c_str()));
 
     std::vector<std::string> arg_storage = args;  // Keep strings alive
     for (const auto& arg : arg_storage) {
@@ -247,7 +246,7 @@ bool SessionManager::parse_open_args(const std::vector<std::string>& design_args
     return true;
 }
 
-WaitForServerResult SessionManager::wait_for_server(int session_id, pid_t pid) {
+WaitForServerResult SessionManager::wait_for_server(const std::string& session_id, pid_t pid) {
     WaitForServerResult result;
     char sock_path[SOCK_PATH_LEN];
     get_sock_path(sock_path, session_id);
@@ -260,8 +259,8 @@ WaitForServerResult SessionManager::wait_for_server(int session_id, pid_t pid) {
     }
     int loops = timeout_sec * 10;
     if (loops <= 0) loops = 600;
-    debug_log("wait_for_server: session=%d pid=%d socket=%s timeout_sec=%d",
-              session_id, pid, sock_path, timeout_sec);
+    debug_log("wait_for_server: session=%s pid=%d socket=%s timeout_sec=%d",
+              session_id.c_str(), pid, sock_path, timeout_sec);
 
     for (int i = 0; i < loops; ++i) {
         usleep(100000);  // 100ms
@@ -304,7 +303,7 @@ WaitForServerResult SessionManager::wait_for_server(int session_id, pid_t pid) {
     return result;
 }
 
-SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string>& design_args) {
+SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string>& design_args, const std::string& session_name) {
     SessionEnsureResult result;
 
     std::string canonical_dbdir;
@@ -317,40 +316,33 @@ SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string
     }
     debug_log("ensure_session: canonical_dbdir=%s", canonical_dbdir.c_str());
 
+    if (!SessionRegistry::is_valid_session_name(session_name)) {
+        result.status = "invalid_session_id";
+        result.message = "Session name is required and must be 1-256 chars using [A-Za-z0-9_.-]";
+        debug_log("ensure_session: reason=invalid_session_id name=%s", session_name.c_str());
+        return result;
+    }
+
     // Clean up stale sessions first
     debug_log("ensure_session: cleanup_stale_begin");
     cleanup();
     debug_log("ensure_session: cleanup_stale_done");
 
-    std::vector<SessionInfo> existing;
-    registry_->load_all(existing);
-    debug_log("ensure_session: existing_sessions=%zu", existing.size());
-    for (const auto& session : existing) {
-        if (session.dbdir_path == canonical_dbdir &&
-            diagnose_session(session.session_id).healthy &&
-            protocol_version_matches(session.socket_path.c_str())) {
-            registry_->touch(session.session_id, time(nullptr));
-            result.ok = true;
-            result.reused = true;
-            result.session_id = session.session_id;
-            result.status = "healthy";
-            result.message = "Reused healthy session";
-            registry_->get(session.session_id, result.info);
-            debug_log("ensure_session: reuse session=%d pid=%d socket=%s",
-                      session.session_id, session.server_pid, session.socket_path.c_str());
-            return result;
-        }
+    if (registry_->exists(session_name)) {
+        result.status = "session_id_exists";
+        result.message = "Session id already exists: " + session_name;
+        debug_log("ensure_session: reason=session_id_exists name=%s", session_name.c_str());
+        return result;
     }
 
-    // Get next session ID
-    int session_id = registry_->get_next_id();
+    std::string session_id = session_name;
     if (!xtrace_ensure_session_dir(session_id)) {
         result.status = "session_dir_failed";
         result.message = "Failed to create session directory";
-        debug_log("ensure_session: reason=session_dir_failed session=%d", session_id);
+        debug_log("ensure_session: reason=session_dir_failed session=%s", session_id.c_str());
         return result;
     }
-    debug_log("ensure_session: next_session_id=%d", session_id);
+    debug_log("ensure_session: session_id=%s", session_id.c_str());
 
     // Spawn server process
     pid_t pid = spawn_server(session_id, canonical_args);
@@ -358,10 +350,10 @@ SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string
         result.status = "spawn_failed";
         result.message = "Failed to spawn xtrace server";
         xtrace_remove_session_dir(session_id);
-        debug_log("ensure_session: reason=spawn_failed session=%d", session_id);
+        debug_log("ensure_session: reason=spawn_failed session=%s", session_id.c_str());
         return result;
     }
-    debug_log("ensure_session: spawned_server session=%d pid=%d", session_id, pid);
+    debug_log("ensure_session: spawned_server session=%s pid=%d", session_id.c_str(), pid);
 
     // Get socket path
     char sock_path[SOCK_PATH_LEN];
@@ -401,7 +393,7 @@ SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string
         xtrace_remove_session_dir(session_id);
         result.status = "registry_failed";
         result.message = "Failed to update session registry";
-        debug_log("ensure_session: reason=registry_failed session=%d", session_id);
+        debug_log("ensure_session: reason=registry_failed session=%s", session_id.c_str());
         return result;
     }
 
@@ -411,23 +403,22 @@ SessionEnsureResult SessionManager::ensure_session(const std::vector<std::string
     result.status = "healthy";
     result.message = "Created healthy session";
     result.info = session;
-    debug_log("ensure_session: success session=%d pid=%d socket=%s", session_id, pid, sock_path);
+    debug_log("ensure_session: success session=%s pid=%d socket=%s", session_id.c_str(), pid, sock_path);
     return result;
 }
 
-int SessionManager::create_session(const std::vector<std::string>& design_args) {
-    SessionEnsureResult result = ensure_session(design_args);
-    return result.ok ? result.session_id : 0;
+SessionEnsureResult SessionManager::create_session(const std::vector<std::string>& design_args, const std::string& session_name) {
+    return ensure_session(design_args, session_name);
 }
 
-bool SessionManager::kill_session(int session_id) {
+bool SessionManager::kill_session(const std::string& session_id) {
     SessionInfo session;
     if (!registry_->get(session_id, session)) {
-        debug_log("kill_session: registry_missing session=%d", session_id);
+        debug_log("kill_session: registry_missing session=%s", session_id.c_str());
         return false;
     }
-    debug_log("kill_session: begin session=%d pid=%d socket=%s",
-              session.session_id, session.server_pid, session.socket_path.c_str());
+    debug_log("kill_session: begin session=%s pid=%d socket=%s",
+              session.session_id.c_str(), session.server_pid, session.socket_path.c_str());
 
     int fd = connect_socket_path(session.socket_path.c_str());
     if (fd < 0) {
@@ -480,7 +471,7 @@ bool SessionManager::kill_all_sessions() {
     return true;
 }
 
-bool SessionManager::get_session(int session_id, SessionInfo& info) {
+bool SessionManager::get_session(const std::string& session_id, SessionInfo& info) {
     return registry_->get(session_id, info);
 }
 
@@ -488,7 +479,7 @@ bool SessionManager::get_latest_session(SessionInfo& info) {
     return registry_->get_latest(info);
 }
 
-bool SessionManager::touch_session(int session_id) {
+bool SessionManager::touch_session(const std::string& session_id) {
     return registry_->touch(session_id, time(nullptr));
 }
 
@@ -499,7 +490,7 @@ std::vector<SessionInfo> SessionManager::list_sessions() {
     return sessions;
 }
 
-SessionHealth SessionManager::diagnose_session(int session_id) {
+SessionHealth SessionManager::diagnose_session(const std::string& session_id) {
     SessionHealth health;
     health.session_id = session_id;
 
@@ -556,11 +547,11 @@ SessionHealth SessionManager::diagnose_session(int session_id) {
     return health;
 }
 
-bool SessionManager::is_session_alive(int session_id) {
+bool SessionManager::is_session_alive(const std::string& session_id) {
     return diagnose_session(session_id).healthy;
 }
 
-std::string SessionManager::get_socket_path(int session_id) {
+std::string SessionManager::get_socket_path(const std::string& session_id) {
     char path[SOCK_PATH_LEN];
     get_sock_path(path, session_id);
     return std::string(path);
